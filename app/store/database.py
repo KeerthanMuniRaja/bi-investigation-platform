@@ -209,40 +209,9 @@ class SqliteDocumentDB:
             return self._conn.execute("SELECT value FROM counters WHERE prefix = ?", (prefix,)).fetchone()[0]
 
 
-POSTGRES_SCHEMA = """
-create schema if not exists bip;
-create table if not exists bip.documents (
-    collection text not null,
-    id         text not null,
-    owner      text not null,
-    created_at timestamptz not null default now(),
-    seq        bigserial,
-    data       text not null,
-    primary key (collection, id)
-);
-create index if not exists documents_owner_idx on bip.documents (collection, owner, created_at desc, seq desc);
-create table if not exists bip.counters (prefix text primary key, value bigint not null);
-create table if not exists bip.users (
-    id            text primary key,
-    username      text not null unique,
-    display_name  text,
-    password_hash text not null,
-    created_at    timestamptz not null default now(),
-    last_login_at timestamptz,
-    token_version integer not null default 0,
-    disabled      boolean not null default false
-);
--- only the API (connecting as the database owner) reads these tables: no
--- row-level policies means nothing is reachable through Supabase's public APIs
-alter table bip.documents enable row level security;
-alter table bip.counters enable row level security;
-alter table bip.users enable row level security;
-revoke all on schema bip from public;
-do $$ begin
-  if exists (select 1 from pg_roles where rolname = 'anon') then execute 'revoke all on schema bip from anon'; end if;
-  if exists (select 1 from pg_roles where rolname = 'authenticated') then execute 'revoke all on schema bip from authenticated'; end if;
-end $$;
-"""
+# the schema lives in a .sql file so it can also be run in Supabase's SQL editor
+# (a copy is in supabase/migrations/ for the Supabase CLI)
+SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
 
 class PostgresDocumentDB:
@@ -255,8 +224,9 @@ class PostgresDocumentDB:
         # prepare_threshold=None: works through Supabase's transaction pooler (PgBouncer) too
         self.pool = ConnectionPool(dsn, min_size=1, max_size=pool_size or int(os.environ.get("BIP_DB_POOL_SIZE", "10")),
                                    kwargs={"autocommit": True, "prepare_threshold": None}, open=True)
-        with self.pool.connection() as conn:
-            conn.execute(POSTGRES_SCHEMA)
+        if os.environ.get("BIP_DB_AUTO_SCHEMA", "true").strip().lower() not in ("0", "false", "no", "off"):
+            with self.pool.connection() as conn:
+                conn.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
 
     def close(self) -> None:
         self.pool.close()
@@ -351,10 +321,22 @@ class PostgresDocumentDB:
                                 "do update set value = bip.counters.value + 1 returning value", (prefix,)).fetchone()[0]
 
 
+def on_vercel() -> bool:
+    return bool(os.environ.get("VERCEL"))
+
+
+def default_data_dir() -> str:
+    # Vercel functions can only write to /tmp (a scratch space that doesn't last)
+    return os.environ.get("BIP_DATA_DIR") or ("/tmp/bip" if on_vercel() else "./data")
+
+
 def open_database(data_dir: Path, db_path: Optional[str] = None) -> DocumentDB:
     url = os.environ.get("DATABASE_URL", "").strip()
     if url and db_path is None:
         return PostgresDocumentDB(url)
+    if on_vercel() and db_path is None:
+        raise RuntimeError("DATABASE_URL isn't set. On Vercel the data must live in Postgres (Supabase): "
+                           "add DATABASE_URL in the project's Environment Variables.")
     return SqliteDocumentDB(db_path or str(data_dir / "bip.sqlite3"))
 
 
@@ -418,7 +400,7 @@ class Collection(Generic[M]):
 
 class Store:
     def __init__(self, data_dir: Optional[str] = None, db_path: Optional[str] = None):
-        self.data_dir = Path(data_dir or os.environ.get("BIP_DATA_DIR", "./data")).resolve()
+        self.data_dir = Path(data_dir or default_data_dir()).resolve()
         self.upload_dir = self.data_dir / "uploads"
         self.export_dir = Path(os.environ.get("EXPORT_DIR", str(self.data_dir / "exports"))).resolve()
         self.upload_dir.mkdir(parents=True, exist_ok=True)

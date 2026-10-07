@@ -156,10 +156,13 @@ def _secret_key() -> str:
     key = os.environ.get("BIP_SECRET_KEY", "").strip()
     if key:
         return key
+    if os.environ.get("VERCEL"):
+        # each Vercel instance would invent its own key and sign everyone out
+        raise HTTPException(500, "BIP_SECRET_KEY isn't set: add it in the Vercel project's Environment Variables.")
     global _generated_key
     with _key_lock:
         if _generated_key is None:
-            path = Path(os.environ.get("BIP_DATA_DIR", "./data")).resolve() / "secret.key"
+            path = Path(os.environ.get("BIP_DATA_DIR") or "./data").resolve() / "secret.key"
             if path.exists():
                 _generated_key = path.read_text(encoding="utf-8").strip()
             else:

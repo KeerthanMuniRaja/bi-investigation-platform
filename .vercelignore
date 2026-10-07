@@ -1,0 +1,15 @@
+# The API project deploys app/ + api/ only; the web app (web/) is its own Vercel project.
+web/
+data/
+tests/
+fixtures/
+samples/
+scripts/
+docs/
+supabase/
+**/__pycache__/
+.pytest_cache/
+.env
+.env.*
+Dockerfile
+.dockerignore

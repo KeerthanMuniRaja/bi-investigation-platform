@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 
 from app.connectors.base import CapabilityError
 from app.engine.dax_explain import category, explain
@@ -22,7 +23,21 @@ def upload_model_file(file: UploadFile = File(...), store: Store = Depends(get_s
     """Upload a .pbix / .pbit / .bim / zipped PBIP and get back a connection
     whose model, report and lineage are ready to explore. (Plain def: the
     file is streamed to disk and parsed in a worker thread.)"""
-    record = recon_service.save_model_upload(store, file.filename or "model.pbix", file.file)
+    return _open(store, recon_service.save_model_upload(store, file.filename or "model.pbix", file.file))
+
+
+class FinishModelUpload(BaseModel):
+    key: str = Field(..., max_length=512)
+    filename: str = Field(..., max_length=255)
+
+
+@router.post("/model-files/import")
+def import_model_file(req: FinishModelUpload, store: Store = Depends(get_store)) -> dict[str, Any]:
+    """Open a Power BI file the browser uploaded straight to cloud storage (see POST /uploads)."""
+    return _open(store, recon_service.finish_direct_upload(store, req.key, req.filename, "model"))
+
+
+def _open(store: Store, record) -> dict[str, Any]:
     connection_id = None
     try:
         connection_id, warnings = recon_service.open_model_file(store, record)

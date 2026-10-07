@@ -105,6 +105,53 @@ def save_model_upload(store: Store, filename: str, content: Content) -> FileReco
     return record
 
 
+def start_direct_upload(store: Store, filename: str, kind: str, size: Optional[int] = None) -> dict:
+    """Step 1 of an upload that goes straight from the browser to cloud
+    storage: check the file and hand out a one-time upload URL in the
+    person's own folder."""
+    name = Path(filename or "upload").name
+    ext = Path(name).suffix.lower()
+    allowed, limit = (MODEL_EXTENSIONS, MAX_MODEL_BYTES) if kind == "model" else (SUPPORTED_EXTENSIONS, MAX_UPLOAD_BYTES)
+    if ext not in allowed:
+        raise FileReadError(f"'{name}' can't be uploaded here. Use " + ", ".join(sorted(allowed)) + ".")
+    if size and size > limit:
+        raise FileReadError(f"File is larger than {limit // (1024 * 1024)} MB.")
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    key = f"{store.blobs.folder(current_owner())}/incoming/{uuid.uuid4().hex[:12]}_{safe}"
+    return {"key": key, "upload_url": store.blobs.sign_upload(key)}
+
+
+def finish_direct_upload(store: Store, key: str, filename: str, kind: str) -> FileRecord:
+    """Step 2: the browser has put the file in storage; fetch it, check it
+    and record it (the stored object stays the copy of record)."""
+    if not key.startswith(store.blobs.folder(current_owner()) + "/") or ".." in key:
+        raise FileReadError("That upload belongs to someone else.")
+    name = Path(filename or key.rsplit("/", 1)[-1]).name
+    file_id = store.next_id("FILE")
+    stored_as = f"{file_id}_{uuid.uuid4().hex[:8]}_{re.sub(r'[^A-Za-z0-9._-]', '_', name)}"
+    path = store.upload_dir / stored_as
+    store.blobs.fetch(key, path)
+    size = path.stat().st_size
+    limit = MAX_MODEL_BYTES if kind == "model" else MAX_UPLOAD_BYTES
+    sheets: list[dict] = []
+    try:
+        if size > limit:
+            raise FileReadError(f"File is larger than {limit // (1024 * 1024)} MB.")
+        if kind != "model":
+            try:
+                sheets = [s.__dict__ for s in list_sheets(path)]
+            except Exception as e:  # noqa: BLE001
+                raise FileReadError(f"Could not read '{name}': {e}") from e
+    except Exception:
+        path.unlink(missing_ok=True)
+        store.blobs.delete(key)
+        raise
+    record = FileRecord(file_id=file_id, name=name, stored_as=stored_as, size=size, kind="model" if kind == "model" else "table",
+                        sheets=sheets, blob_key=key)
+    store.files[record.file_id] = record
+    return record
+
+
 def open_model_file(store: Store, record: FileRecord) -> tuple[str, list[str]]:
     """Create a connection for an uploaded Power BI file and build its lineage graph."""
     from app.connectors.registry import ConnectionRecord

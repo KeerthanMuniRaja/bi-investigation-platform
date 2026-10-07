@@ -28,6 +28,8 @@ CHUNK = 1024 * 1024
 class Blobs(Protocol):
     enabled: bool
 
+    def folder(self, owner: str) -> str: ...
+    def sign_upload(self, key: str) -> str: ...
     def put(self, owner: str, name: str, path: Path) -> Optional[str]: ...
     def fetch(self, key: str, path: Path) -> None: ...
     def delete(self, key: str) -> None: ...
@@ -36,6 +38,12 @@ class Blobs(Protocol):
 class LocalBlobs:
     """No cloud storage: the uploads folder is the only copy."""
     enabled = False
+
+    def folder(self, owner: str) -> str:
+        return SupabaseBlobs.folder(owner)
+
+    def sign_upload(self, key: str) -> str:
+        raise RuntimeError("Direct uploads need cloud storage (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY).")
 
     def put(self, owner: str, name: str, path: Path) -> Optional[str]:
         return None
@@ -72,9 +80,23 @@ class SupabaseBlobs:
         self._ready = True
 
     @staticmethod
-    def key_for(owner: str, name: str) -> str:
-        folder = re.sub(r"[^a-z0-9._-]", "_", owner.lower()) or "local"
-        return f"{folder}/{name}"
+    def folder(owner: str) -> str:
+        """Each person's files sit under their own folder in the bucket."""
+        return re.sub(r"[^a-z0-9._-]", "_", owner.lower()) or "local"
+
+    @classmethod
+    def key_for(cls, owner: str, name: str) -> str:
+        return f"{cls.folder(owner)}/{name}"
+
+    def sign_upload(self, key: str) -> str:
+        """A one-time URL the browser can PUT a file to directly — big uploads
+        then never pass through the API (Vercel caps requests at ~4.5 MB)."""
+        self._ensure_bucket()
+        r = self.client.post(f"{self.base}/object/upload/sign/{self.bucket}/{quote(key, safe='/')}", headers=self.headers, json={})
+        if r.status_code not in (200, 201):
+            raise RuntimeError(f"Couldn't prepare the upload: {r.status_code} {r.text[:200]}")
+        url = r.json().get("url") or ""
+        return url if url.startswith("http") else f"{self.base}{url if url.startswith('/') else '/' + url}"
 
     def _object_url(self, key: str) -> str:
         return f"{self.base}/object/{self.bucket}/{quote(key, safe='/')}"

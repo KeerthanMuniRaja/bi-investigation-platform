@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 
 from app.services import recon_service
 from app.sources.files import detect_header_row, parse_table, read_grid
@@ -25,6 +26,29 @@ def upload_files(files: list[UploadFile] = File(...), store: Store = Depends(get
             recon_service.delete_file(store, record.file_id, force=True)
         raise
     return saved
+
+
+class DirectUpload(BaseModel):
+    filename: str = Field(..., max_length=255)
+    kind: str = Field("table", pattern="^(table|model)$")
+    size: Optional[int] = None
+
+
+class FinishUpload(BaseModel):
+    key: str = Field(..., max_length=512)
+    filename: str = Field(..., max_length=255)
+
+
+@router.post("/uploads")
+def start_upload(req: DirectUpload, store: Store = Depends(get_store)) -> dict:
+    """Big files: get a one-time URL to upload straight to cloud storage,
+    then call POST /files/import (or /model-files/import) with the key."""
+    return recon_service.start_direct_upload(store, req.filename, req.kind, req.size)
+
+
+@router.post("/files/import", response_model=FileRecord)
+def import_uploaded_file(req: FinishUpload, store: Store = Depends(get_store)) -> FileRecord:
+    return recon_service.finish_direct_upload(store, req.key, req.filename, "table")
 
 
 @router.get("/files", response_model=list[FileRecord])

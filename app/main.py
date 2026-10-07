@@ -116,10 +116,12 @@ def me(user: Optional[User] = Depends(require_user)) -> dict:
 
 
 @app.get("/api/info", tags=["meta"])
-def info() -> dict:
+def info(store: Store = Depends(get_store)) -> dict:
     # the web app reads this first: show the sign-in screen or not, offer "Create account" or not
     return {"product": "BI Investigation & Trust Platform", "version": app.version, "docs": "/docs",
-            "auth": auth_enabled(), "signup": auth_enabled() and signup_allowed()}
+            "auth": auth_enabled(), "signup": auth_enabled() and signup_allowed(),
+            # with cloud storage, the browser uploads files straight to it (no size limit from the API host)
+            "direct_upload": store.blobs.enabled}
 
 
 @app.get("/health", tags=["meta"])

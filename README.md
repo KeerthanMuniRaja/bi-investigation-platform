@@ -107,21 +107,22 @@ test runs against its own temporary data folder.
 
 ## Deploying
 
-Hosted, people **sign in with a username and password** (accounts are kept
-in the app's database, passwords stored only as salted hashes) and each
-person sees only their own dashboards, files, results and investigations:
+Built for **Supabase + Vercel**: people sign up with a **username and
+password** (stored in your Supabase database, passwords only as salted
+hashes), and each person sees only the data they loaded.
 
-- **Web app (`web/`)** on Vercel (Root Directory `web`).
-- **API (`app/`)** on any Docker host (Render, Railway, Fly.io, Azure,
-  Cloud Run), using the repo's `Dockerfile`. It can't run on Vercel: it reads
-  uploads of hundreds of MB, and reading a model can take minutes.
-- **Supabase** (optional) for the records and accounts (Postgres) and the
-  uploaded files (Storage). Tables and the bucket are created automatically.
+- **Supabase**: Postgres for accounts and records (run
+  `supabase/migrations/20261008000000_bip_schema.sql` in the SQL editor), and
+  Storage for uploaded files.
+- **Vercel project 1, the API**: repo root (`vercel.json`, `api/index.py`). The
+  Python API runs as a serverless function.
+- **Vercel project 2, the website**: Root Directory `web`.
+- Big uploads go straight from the browser to Supabase Storage, so Vercel's
+  ~4.5 MB request limit doesn't apply to them.
 
-Step-by-step setup and every setting: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
-Example settings: `.env.example`. Manage accounts with
-`python scripts/create_user.py` (`add`, `list`, `reset-password`, `disable`,
-`claim-local`).
+Step-by-step, every setting and Vercel's limits:
+**[docs/DEPLOY.md](docs/DEPLOY.md)**. For very large .pbix files the same API
+also runs from the `Dockerfile` on any container host.
 
 Without `BIP_AUTH=password` the app runs exactly as before: no sign-in, one
 local workspace. Use that for local development; the tests always run this way.
@@ -157,6 +158,8 @@ app/
   api/           FastAPI routers (connections, semantic/lineage, files, datasets, recon,
                  templates, snapshots, investigations, exports)
   static/        handoff.html: the API's root page, which sends people to the web app
+api/index.py     Vercel entry point for the API (vercel.json routes everything to it)
+supabase/        migrations/: the database schema to run in Supabase (same as app/store/schema.sql)
 web/             The frontend: Next.js (App Router) + React + TypeScript + Motion
   app/           routes (the folder tree is the URL scheme, see "Addresses" below)
   components/    shell (sidebars, breadcrumbs), workspace, model views, lineage, recon

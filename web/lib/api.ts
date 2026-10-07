@@ -138,15 +138,52 @@ export async function syncConnection(cid: string) {
   return r;
 }
 
+/* With cloud storage on (always the case on Vercel), files go straight from
+   the browser to Supabase Storage through a one-time URL, then the API
+   imports them: hosts like Vercel cap a request at ~4.5 MB. Otherwise they
+   are posted to the API as before. */
+let infoPromise: Promise<{ direct_upload?: boolean }> | null = null;
+function serverInfo() {
+  infoPromise ??= openApi<{ direct_upload?: boolean }>("GET", "/api/info").catch((e) => { infoPromise = null; throw e; });
+  return infoPromise;
+}
+
+async function toStorage(file: File, kind: "table" | "model"): Promise<string> {
+  const { key, upload_url } = await post<{ key: string; upload_url: string }>("/uploads", { filename: file.name, kind, size: file.size });
+  let res: Response;
+  try {
+    res = await fetch(upload_url, { method: "PUT", body: file, headers: { "Content-Type": file.type || "application/octet-stream", "x-upsert": "true" } });
+  } catch {
+    throw new ApiError(`Couldn't upload ${file.name} to storage — check your connection and try again.`, 0);
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    const tooBig = res.status === 413 || /maximum allowed size|too large/i.test(text);
+    throw new ApiError(tooBig ? `${file.name} is bigger than the storage allows (raise the limit under Supabase → Storage → Settings).`
+      : `Upload of ${file.name} failed (${res.status}).`, res.status);
+  }
+  return key;
+}
+
+type OpenedModel = { connection_id: string; name: string; counts: Record<string, number>; warnings: string[] };
+
 export async function uploadModel(file: File) {
+  if ((await serverInfo()).direct_upload) {
+    return post<OpenedModel>("/model-files/import", { key: await toStorage(file, "model"), filename: file.name });
+  }
   const fd = new FormData();
   fd.append("file", file);
-  return api<{ connection_id: string; name: string; counts: Record<string, number>; warnings: string[] }>("POST", "/model-files", fd);
+  return api<OpenedModel>("POST", "/model-files", fd);
 }
 
 export async function uploadFiles(files: FileList | File[]) {
+  const list = Array.from(files);
+  if ((await serverInfo()).direct_upload) {
+    const saved: FileRecord[] = [];
+    for (const f of list) saved.push(await post<FileRecord>("/files/import", { key: await toStorage(f, "table"), filename: f.name }));
+    return saved;
+  }
   const fd = new FormData();
-  for (const f of Array.from(files)) fd.append("files", f);
+  for (const f of list) fd.append("files", f);
   return api<FileRecord[]>("POST", "/files", fd);
 }
-

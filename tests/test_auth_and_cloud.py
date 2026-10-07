@@ -175,6 +175,7 @@ class FakeStorage:
     def __init__(self):
         self.buckets: set[str] = set()
         self.objects: dict[str, bytes] = {}
+        self.signed: set[str] = set()
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         import json
@@ -186,6 +187,10 @@ class FakeStorage:
         if request.method == "POST" and path == "/bucket":
             self.buckets.add(json.loads(request.content)["id"])
             return httpx.Response(200, json={})
+        if request.method == "POST" and path.startswith("/object/upload/sign/"):
+            key = path.removeprefix("/object/upload/sign/")
+            self.signed.add(key)
+            return httpx.Response(200, json={"url": f"/object/upload/sign/{key}?token=one-time"})
         if path.startswith("/object/"):
             key = path.removeprefix("/object/")
             if request.method == "POST":
@@ -224,3 +229,51 @@ def test_uploads_are_kept_in_cloud_storage_and_fetched_back(tmp_path):
     finally:
         set_owner("local")
         del reset
+
+
+def test_big_files_go_straight_from_the_browser_to_storage(tmp_path):
+    """On Vercel requests are capped at ~4.5 MB: the browser uploads to a
+    one-time storage URL, then the API imports the stored file."""
+    fake = FakeStorage()
+    store = reset_store(str(tmp_path / "data"))
+    store.blobs = SupabaseBlobs("https://example.supabase.co", "service-key", "bip-files", client=httpx.Client(transport=httpx.MockTransport(fake.handler)))
+    from app.services import recon_service
+    from app.sources.files import FileReadError
+
+    reset = set_owner("ann")
+    try:
+        started = recon_service.start_direct_upload(store, "tableau_sales_by_region.csv", "table", 1000)
+        assert started["key"].startswith("ann/incoming/") and started["key"].endswith("_tableau_sales_by_region.csv")
+        assert started["upload_url"] == f"https://example.supabase.co/storage/v1/object/upload/sign/bip-files/{started['key']}?token=one-time"
+        with pytest.raises(FileReadError):
+            recon_service.start_direct_upload(store, "notes.exe", "table")             # wrong type
+        with pytest.raises(FileReadError):
+            recon_service.start_direct_upload(store, "big.csv", "table", 10 ** 10)     # too big
+        # the browser PUTs the file to the signed URL
+        fake.objects[f"bip-files/{started['key']}"] = (SAMPLES / "tableau_sales_by_region.csv").read_bytes()
+        with pytest.raises(FileReadError):                                          # someone else's folder
+            recon_service.finish_direct_upload(store, "bob/incoming/x.csv", "x.csv", "table")
+        record = recon_service.finish_direct_upload(store, started["key"], "tableau_sales_by_region.csv", "table")
+        assert record.blob_key == started["key"] and record.sheets and record.kind == "table"
+        assert store.files[record.file_id].name == "tableau_sales_by_region.csv"
+    finally:
+        set_owner("local")
+        del reset
+
+
+def test_the_supabase_migration_is_the_schema_the_api_uses():
+    root = Path(__file__).resolve().parent.parent
+    assert (root / "supabase/migrations/20261008000000_bip_schema.sql").read_text(encoding="utf-8") ==         (root / "app/store/schema.sql").read_text(encoding="utf-8")
+    sql = (root / "app/store/schema.sql").read_text(encoding="utf-8")
+    for table in ("bip.users", "bip.documents", "bip.counters"):
+        assert f"create table if not exists {table}" in sql and f"alter table {table} enable row level security" in sql
+
+
+def test_on_vercel_the_data_must_be_in_postgres(monkeypatch, tmp_path):
+    from app.store.database import default_data_dir, open_database
+
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.delenv("BIP_DATA_DIR", raising=False)
+    assert default_data_dir() == "/tmp/bip"                 # the only writable place there
+    with pytest.raises(RuntimeError, match="DATABASE_URL"):
+        open_database(tmp_path)
