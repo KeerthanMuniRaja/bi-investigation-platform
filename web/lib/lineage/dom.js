@@ -3,7 +3,7 @@
  * Everything React-side lives in components/; this keeps the canvas engine
  * framework-free (it draws thousands of SVG nodes with hand-tuned motion).
  */
-import { API_URL } from "../api";
+import { api } from "../api";
 
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -28,24 +28,9 @@ export const loading = (text = "Loading…") => `<div class="loading"><span clas
 export const alertBox = (kind, items) =>
   !items || !items.length ? "" : `<div class="alert ${kind}">${items.length === 1 ? esc(items[0]) : `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>`}</div>`;
 
-export async function GET(path) {
-  const res = await fetch(`${API_URL}${path}`);
-  const text = await res.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  if (!res.ok) {
-    const err = new Error((data && data.detail && (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail))) || `${res.status} ${res.statusText}`);
-    err.status = res.status;
-    throw err;
-  }
-  return data;
-}
-
-export async function syncConnection(cid) {
-  const res = await fetch(`${API_URL}/connections/${encodeURIComponent(cid)}/sync`, { method: "POST" });
-  if (!res.ok) throw new Error(`Sync failed (${res.status})`);
-  return res.json();
-}
+// through the shared API client, so requests carry the signed-in user's token
+export const GET = (path) => api("GET", path);
+export const syncConnection = (cid) => api("POST", `/connections/${encodeURIComponent(cid)}/sync`, {});
 
 export async function act(btn, label, fn) {
   const before = btn?.innerHTML;

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
-import { API_URL, del, enc, get, patch, post, qs, refresh, useApi } from "@/lib/api";
+import { del, download, enc, get, patch, post, qs, refresh, useApi } from "@/lib/api";
 import { fmt, nodeType } from "@/lib/format";
 import { spring } from "@/lib/motion";
 import { href, recordId, safeDecode, statusFromUrl } from "@/lib/routes";
@@ -112,7 +112,7 @@ export function InvestigationDetail({ slug }: { slug: string }) {
         text="Overall confidence is only as strong as the weakest finding — the platform never claims more certainty than the evidence supports."
         actions={<>
           <select value={inv.status} onChange={(e) => setStatus(e.target.value)} aria-label="Status">{Object.entries(INV_TEXT).map(([s, l]) => <option key={s} value={s}>{l}</option>)}</select>
-          {canExport ? <a className="btn" href={`${API_URL}/exports/investigations/${enc(id)}.xlsx`}><Icon d={I.download} />Download workbook</a> : null}
+          {canExport ? <button className="btn" onClick={() => download(`/exports/investigations/${enc(id)}.xlsx`, `${inv.investigation_id}.xlsx`).catch((e) => toast((e as Error).message, "bad"))}><Icon d={I.download} />Download workbook</button> : null}
           <button className="btn ghost danger" onClick={remove}><Icon d={I.trash} />Delete</button>
         </>} />
       <div className="grid-2">

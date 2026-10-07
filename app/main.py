@@ -11,6 +11,15 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import Optional
+
+# settings from <project>/.env (DATABASE_URL, SUPABASE_URL, ...) — real environment variables win
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+except ImportError:  # pragma: no cover
+    pass
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import connections, datasets, exports, files, investigations, model_files, recon, reconciliations, semantic, snapshots
+from app.auth import User, auth_enabled, require_user
 from app.connectors.base import CapabilityError, ConnectorError
 from app.errors import NotFoundError
 from app.sources.files import FileReadError
@@ -91,13 +101,23 @@ async def _bad_input(_: Request, exc: ValueError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
+# every data route needs a signed-in user (when sign-in is configured) and
+# only ever sees that user's own records
 for module in (model_files, connections, semantic, files, datasets, recon, snapshots, reconciliations, investigations, exports):
-    app.include_router(module.router)
+    app.include_router(module.router, dependencies=[Depends(require_user)])
+
+
+@app.get("/me", tags=["meta"])
+def me(user: Optional[User] = Depends(require_user)) -> dict:
+    """Who is signed in (the web app shows it; also a cheap "is my token ok" check)."""
+    if user is None:
+        return {"auth": False, "email": None, "name": "Local workspace"}
+    return {"auth": True, "email": user.email, "name": user.name}
 
 
 @app.get("/api/info", tags=["meta"])
 def info() -> dict:
-    return {"product": "BI Investigation & Trust Platform", "version": app.version, "docs": "/docs"}
+    return {"product": "BI Investigation & Trust Platform", "version": app.version, "docs": "/docs", "auth": auth_enabled()}
 
 
 @app.get("/health", tags=["meta"])
@@ -105,7 +125,7 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/stats", tags=["meta"])
+@app.get("/stats", tags=["meta"], dependencies=[Depends(require_user)])
 def stats(store: Store = Depends(get_store)) -> dict:
     runs = store.data_reconciliations.values()
     invs = store.investigations.values()

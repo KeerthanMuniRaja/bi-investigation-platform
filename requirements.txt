@@ -6,3 +6,9 @@ openpyxl>=3.1
 requests>=2.31
 msal>=1.28
 pbixray>=0.15
+# cloud: Postgres (e.g. Supabase), sign-in tokens, Supabase Storage, .env files
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+PyJWT[crypto]>=2.8
+httpx>=0.27
+python-dotenv>=1.0

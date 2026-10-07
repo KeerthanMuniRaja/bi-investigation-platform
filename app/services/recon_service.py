@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import BinaryIO, Optional, Union
 
+from app.auth import current_owner
 from app.engine import investigation as inv_engine
 from app.engine.data_reconciliation import reconcile_datasets
 from app.engine.datasets import build_dataset, rows_from_query_result
@@ -74,9 +75,18 @@ def save_upload(store: Store, filename: str, content: Content, content_type: Opt
         path.unlink(missing_ok=True)
         raise FileReadError(f"Could not read '{name}': {e}") from e
     record = FileRecord(file_id=stored_as.split("_", 1)[0], name=name, stored_as=stored_as, size=size,
-                        content_type=content_type, sheets=sheets)
+                        content_type=content_type, sheets=sheets, blob_key=_to_cloud(store, path))
     store.files[record.file_id] = record
     return record
+
+
+def _to_cloud(store: Store, path: Path) -> Optional[str]:
+    """Copy an upload to cloud storage (when configured) so every API server can read it."""
+    try:
+        return store.blobs.put(current_owner(), path.name, path)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
 
 
 MODEL_EXTENSIONS = {".pbix", ".pbit", ".bim", ".zip"}
@@ -89,7 +99,8 @@ def save_model_upload(store: Store, filename: str, content: Content) -> FileReco
     if ext not in MODEL_EXTENSIONS:
         raise FileReadError(f"'{name}' isn't a Power BI file. Upload a .pbix, .pbit, .bim or a zipped PBIP project.")
     stored_as, size = _write_upload(store, name, content, MAX_MODEL_BYTES)
-    record = FileRecord(file_id=stored_as.split("_", 1)[0], name=name, stored_as=stored_as, size=size, kind="model")
+    record = FileRecord(file_id=stored_as.split("_", 1)[0], name=name, stored_as=stored_as, size=size, kind="model",
+                        blob_key=_to_cloud(store, store.upload_dir / stored_as))
     store.files[record.file_id] = record
     return record
 
@@ -126,6 +137,8 @@ def delete_file(store: Store, file_id: str, force: bool = False) -> bool:
         raise ValueError(f"{record.name} is still used by {', '.join(users[:3])} — delete or change those first.")
     path = store.upload_dir / record.stored_as
     path.unlink(missing_ok=True)
+    if record.blob_key:
+        store.blobs.delete(record.blob_key)
     # a zipped PBIP project is extracted next to the upload
     shutil.rmtree(path.parent / f"{path.stem}_pbip", ignore_errors=True)
     return store.files.delete(file_id)

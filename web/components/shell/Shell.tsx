@@ -8,6 +8,7 @@ import { Sidebar } from "./Sidebar";
 import { ConfirmProvider, Toaster } from "@/components/feedback";
 import { I, Icon } from "@/components/ui";
 import { API_URL } from "@/lib/api";
+import { UserMenu } from "@/components/auth/UserMenu";
 import { useWsRoute } from "@/lib/routes";
 
 const DARK_MQ = "(prefers-color-scheme: dark)";
@@ -53,6 +54,7 @@ export function Shell({ children }: { children: ReactNode }) {
               <span className="spacer" />
               <a className="btn ghost sm" href={`${API_URL}/docs`} target="_blank" rel="noopener noreferrer">API docs</a>
               <ThemeToggle />
+              <UserMenu />
             </header>
             <div className="content">{children}</div>
           </main>

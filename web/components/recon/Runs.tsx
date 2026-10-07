@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
-import { API_URL, enc, get, post, qs, useApi } from "@/lib/api";
+import { download, enc, get, post, qs, useApi } from "@/lib/api";
 import { fmt, signClass } from "@/lib/format";
 import { fadeUp, spring } from "@/lib/motion";
 import { href, recordId, safeDecode } from "@/lib/routes";
@@ -123,7 +123,7 @@ export function RunDetail({ slug }: { slug: string }) {
         title={<><div className="row" style={{ marginBottom: 6 }}><RunBadge s={rec.status} /><ConfBadge c={rec.confidence} /><span className="faint small" style={{ fontWeight: 400 }}>{rec.reconciliation_id} · {fmt.date(rec.created_at)}</span></div>{rec.name}</>}
         text={<><SideLabel side="left" /> {A} &nbsp;vs&nbsp; <SideLabel side="right" /> {B}</>}
         actions={<>
-          <a className="btn" href={`${API_URL}/recon/${enc(id)}/export`}><Icon d={I.download} />Download Excel</a>
+          <button className="btn" onClick={() => run("xlsx", () => download(`/recon/${enc(id)}/export`, `${rec.name}.xlsx`))} disabled={!!busy}>{busy === "xlsx" ? <Spinner /> : <Icon d={I.download} />}Download Excel</button>
           {rec.definition_id ? <button className="btn" onClick={rerun} disabled={!!busy}>{busy === "rerun" ? <Spinner /> : <Icon d={I.reload} />}Run again</button>
             : <button className="btn" onClick={() => setTplOpen(true)}><Icon d={I.template} />Save as template</button>}
           {rec.investigation_id ? <Link className="btn primary" href={href.investigation(rec.investigation_id)}><Icon d={I.investigate} />Open investigation</Link>

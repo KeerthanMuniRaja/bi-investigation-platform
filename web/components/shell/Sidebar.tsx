@@ -13,6 +13,7 @@ import { pageMeasureIds } from "@/lib/overview";
 import type { ModelFile, Overview } from "@/lib/types";
 import { toast, useConfirm } from "@/components/feedback";
 import { I, Icon, Spinner } from "@/components/ui";
+import { authEnabled } from "@/lib/supabase";
 
 const TOOLS = [
   { href: href.reconcile, label: "Reconcile", icon: I.reconcile },
@@ -108,7 +109,7 @@ export function Sidebar() {
           })}
         </nav>
       </LayoutGroup>
-      <div className="sidebar-foot"><span className="dot" />Runs locally · nothing leaves this machine</div>
+      <div className="sidebar-foot"><span className="dot" />{authEnabled ? "Private to your account" : "Runs locally · nothing leaves this machine"}</div>
     </aside>
   );
 }

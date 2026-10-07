@@ -7,9 +7,16 @@ from app.store.database import Store, reset_store
 from tests.fakes import MockConnector
 
 
+CLOUD_SETTINGS = ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_JWT_SECRET",
+                  "BIP_ALLOWED_EMAILS", "BIP_ALLOWED_DOMAINS", "BIP_STORAGE_BUCKET")
+
+
 @pytest.fixture(autouse=True)
 def isolated_store(tmp_path, monkeypatch):
-    """Every test gets its own SQLite database and upload/export folders."""
+    """Every test gets its own SQLite database and upload/export folders —
+    never the cloud database or storage, even if the shell has them set."""
+    for name in CLOUD_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("EXPORT_DIR", str(tmp_path / "exports"))
     return reset_store(str(tmp_path / "data"))
 

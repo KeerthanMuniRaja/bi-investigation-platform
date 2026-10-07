@@ -5,6 +5,7 @@
 "use client";
 
 import useSWR, { mutate as globalMutate, type SWRConfiguration } from "swr";
+import { accessToken, reportAuthProblem } from "./supabase";
 import type { FileRecord } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
@@ -29,8 +30,19 @@ function detailOf(data: unknown, res: Response): string {
   return `${res.status} ${res.statusText}`;
 }
 
+/** headers every request carries: the signed-in user's token, when sign-in is on */
+export async function authHeaders(): Promise<Record<string, string>> {
+  const token = await accessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function checkAuth(res: Response, message: string) {
+  if (res.status === 401) reportAuthProblem({ kind: "expired", message });
+  else if (res.status === 403 && /isn't allowed/i.test(message)) reportAuthProblem({ kind: "denied", message });
+}
+
 export async function api<T = unknown>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const init: RequestInit = { method, signal, headers: {} };
+  const init: RequestInit = { method, signal, headers: await authHeaders() };
   if (body instanceof FormData) init.body = body;
   else if (body !== undefined) {
     (init.headers as Record<string, string>)["Content-Type"] = "application/json";
@@ -46,8 +58,39 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   const text = await res.text();
   let data: unknown = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  if (!res.ok) throw new ApiError(detailOf(data, res), res.status);
+  if (!res.ok) {
+    const message = detailOf(data, res);
+    checkAuth(res, message);
+    throw new ApiError(message, res.status);
+  }
   return data as T;
+}
+
+/** download a file the API generates (Excel exports): fetched with the token, then saved */
+export async function download(path: string, fallbackName: string) {
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, { headers: await authHeaders() });
+  } catch {
+    throw new ApiError(`Can't reach the Python API at ${API_URL} — is it running? (uvicorn app.main:app)`, 0);
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    let data: unknown = null;
+    try { data = JSON.parse(text); } catch { data = text; }
+    const message = detailOf(data, res);
+    checkAuth(res, message);
+    throw new ApiError(message, res.status);
+  }
+  const disposition = res.headers.get("content-disposition") || "";
+  const match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(disposition);
+  const name = match ? decodeURIComponent(match[1] || match[2]) : fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 export const get = <T,>(path: string) => api<T>("GET", path);

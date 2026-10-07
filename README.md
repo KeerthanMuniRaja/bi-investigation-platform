@@ -109,24 +109,24 @@ test runs against its own temporary data folder.
 
 ## Deploying
 
-The two parts are hosted separately:
+Hosted, people **sign in with Google** and each person sees only their own
+dashboards, files, results and investigations:
 
-- **Web app (`web/`) on Vercel.** Import the repo, set **Root Directory**
-  to `web`, and add the environment variable `NEXT_PUBLIC_API_URL` with the
-  API's public URL (see `web/.env.example`). Vercel detects Next.js and
-  builds it.
-- **API (`app/`) on a server with a disk**, e.g. Render, Railway, Fly.io,
-  Azure App Service or a VM:
-  `pip install -r requirements.txt` then
-  `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. It can't run on
-  Vercel: it keeps its SQLite database and uploaded files on disk
-  (`BIP_DATA_DIR`), takes uploads of hundreds of MB, and reading a model
-  can take minutes. Set `BIP_CORS_ORIGINS` to the web app's URL (for
-  example `https://your-app.vercel.app`) and `BIP_WEB_URL` to the same URL.
+- **Web app (`web/`)** on Vercel (Root Directory `web`).
+- **API (`app/`)** on any Docker host (Render, Railway, Fly.io, Azure,
+  Cloud Run), using the repo's `Dockerfile`. It can't run on Vercel: it reads
+  uploads of hundreds of MB, and reading a model can take minutes.
+- **Supabase** for Google sign-in (Auth), the records (Postgres) and the
+  uploaded files (Storage). Tables and the storage bucket are created
+  automatically.
 
-The API has no login yet: anyone who can reach its URL can read and upload
-models. Keep it private (VPN, IP allow-list or an auth proxy) until
-authentication is added.
+Step-by-step setup, every setting and where it goes:
+**[docs/DEPLOY.md](docs/DEPLOY.md)**. Example settings: `.env.example` (API)
+and `web/.env.example` (web app). To move your existing local work into
+your account: `python scripts/migrate_to_cloud.py --owner you@gmail.com`.
+
+Without those settings the app runs exactly as before: no sign-in, SQLite
+and local files. Use that for local development; the tests always run this way.
 
 ## Architecture
 
@@ -153,7 +153,9 @@ app/
                    investigation.py       evidence, findings, hypotheses → case; honest status
                    excel_export.py        reconciliation + investigation workbooks
   services/      recon_service.py: orchestration (upload, materialize datasets, run, templates)
-  store/         database.py: SQLite document store (pydantic models are the schema)
+  store/         database.py: document store in SQLite (local) or Postgres (cloud), scoped to
+                 the signed-in owner; blobs.py: uploaded files in Supabase Storage
+  auth.py        Google sign-in via Supabase: checks the token on every request
   api/           FastAPI routers (connections, semantic/lineage, files, datasets, recon,
                  templates, snapshots, investigations, exports)
   static/        The previous web app (plain HTML/CSS/JS), still served at :8000

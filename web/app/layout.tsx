@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { Suspense } from "react";
+import { AuthProvider } from "@/components/auth/AuthProvider";
 import { Shell } from "@/components/shell/Shell";
 import "./styles/base.css";
 import "./styles/lineage.css";
@@ -28,7 +29,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       </head>
       <body>
         <Suspense fallback={<div className="app-boot"><span className="spinner" /></div>}>
-          <Shell>{children}</Shell>
+          <AuthProvider>
+            <Shell>{children}</Shell>
+          </AuthProvider>
         </Suspense>
       </body>
     </html>
