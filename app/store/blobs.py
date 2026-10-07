@@ -65,7 +65,11 @@ class SupabaseBlobs:
         self.base = url.rstrip("/") + "/storage/v1"
         self.bucket = bucket
         self.client = client or httpx.Client(timeout=httpx.Timeout(timeout, connect=15.0))
-        self.headers = {"Authorization": f"Bearer {service_key}", "apikey": service_key}
+        # new-style secret keys (sb_secret_...) go in the apikey header only; legacy
+        # service_role keys are JWTs and are also sent as the bearer token
+        self.headers = {"apikey": service_key}
+        if not service_key.startswith("sb_"):
+            self.headers["Authorization"] = f"Bearer {service_key}"
         self._ready = False
 
     def _ensure_bucket(self) -> None:

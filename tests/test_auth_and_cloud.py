@@ -277,3 +277,10 @@ def test_on_vercel_the_data_must_be_in_postgres(monkeypatch, tmp_path):
     assert default_data_dir() == "/tmp/bip"                 # the only writable place there
     with pytest.raises(RuntimeError, match="DATABASE_URL"):
         open_database(tmp_path)
+
+
+def test_both_supabase_key_formats_are_sent_the_right_way():
+    legacy = SupabaseBlobs("https://example.supabase.co", "eyJhbGciOiJIUzI1NiJ9.legacy.jwt")
+    assert legacy.headers == {"apikey": "eyJhbGciOiJIUzI1NiJ9.legacy.jwt", "Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.legacy.jwt"}
+    new = SupabaseBlobs("https://example.supabase.co", "sb_secret_abc123")
+    assert new.headers == {"apikey": "sb_secret_abc123"}       # not a JWT: apikey header only
