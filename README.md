@@ -119,6 +119,9 @@ hashes), and each person sees only the data they loaded.
 - **Vercel project 2, the website**: Root Directory `web`.
 - Big uploads go straight from the browser to Supabase Storage, so Vercel's
   ~4.5 MB request limit doesn't apply to them.
+- Power BI files are read once: a snapshot of what was read (model, report,
+  lineage, first rows of each table) is saved in Postgres and the original is
+  deleted, so it uses no storage (`BIP_KEEP_MODEL_FILES=true` keeps it).
 
 Step-by-step, every setting and Vercel's limits:
 **[docs/DEPLOY.md](docs/DEPLOY.md)**. For very large .pbix files the same API

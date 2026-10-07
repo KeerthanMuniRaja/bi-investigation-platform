@@ -160,11 +160,24 @@ def open_model_file(store: Store, record: FileRecord) -> tuple[str, list[str]]:
                             file_ids=[record.file_id], workspace_id="file")
     try:
         store.add_connection(conn, {})
-        _, warnings = store.sync(conn.id, "file")
+        _, warnings = store.sync(conn.id, "file")   # also saves the snapshot of what was read
     except Exception:
         store.remove_connection(conn.id)
         raise
+    if not keep_model_files(store):
+        store.release_model_file(conn.id)
     return conn.id, warnings
+
+
+def keep_model_files(store: Store) -> bool:
+    """Keep uploaded Power BI files after reading them? By default only when
+    they cost nothing extra (no cloud storage); BIP_KEEP_MODEL_FILES overrides."""
+    import os
+
+    value = os.environ.get("BIP_KEEP_MODEL_FILES", "").strip().lower()
+    if value:
+        return value not in ("0", "false", "no", "off")
+    return not store.blobs.enabled
 
 
 def file_users(store: Store, file_id: str) -> list[str]:

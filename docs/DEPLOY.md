@@ -9,7 +9,12 @@ Browser ──► web app (project 1, folder web/) ──► API (project 2, rep
 
 - **Supabase** holds the accounts (username + hashed password), every record
   (each person's dashboards, files, results, investigations) and the
-  uploaded files.
+  uploaded Excel/CSV files.
+- **Power BI files are read once and not kept.** The app saves a snapshot of
+  what it read (model, measures with DAX, relationships, report pages and
+  visuals, lineage, plus the first 50 rows of each table for previews) in
+  Postgres, typically under 1 MB, and deletes the uploaded .pbix. That saves
+  storage, and dashboards open fast even on a cold start.
 - **Vercel** runs both parts from the same GitHub repo, as two projects:
   the website, and the Python API as a serverless function.
 - People **sign up with a username and password**. After signing in, each
@@ -67,6 +72,7 @@ Plan about 30–45 minutes.
    | `BIP_ALLOW_SIGNUP` | `true` (anyone can create an account) |
    | `BIP_DB_AUTO_SCHEMA` | `false` (you created the schema in step 1.2) |
    | `BIP_DB_POOL_SIZE` | `3` |
+   | `BIP_KEEP_MODEL_FILES` | `false` (Power BI files are deleted after reading; see section 4) |
    | `BIP_CORS_ORIGINS` | the web app's URL from step 3, e.g. `https://bi-investigation-platform.vercel.app` |
    | `BIP_WEB_URL` | the same URL |
 
@@ -96,6 +102,12 @@ The API runs as a serverless function, so a few Vercel limits apply:
 | 2 GB memory (Hobby), 4 GB (Pro) | Very large models may run out of memory. |
 | ~500 MB scratch disk | The working copy of a file must fit; the copy of record stays in Supabase Storage. |
 | Supabase free plan: 50 MB per file | Raise it on a paid plan (step 1.4). |
+
+**What needs the original .pbix:** only reconciling against the numbers a
+Power BI *visual* would compute from every row of a table. Lineage, measures,
+relationships, the health check, report map, table previews and all
+Excel/CSV reconciliations work from the snapshot. To keep the originals,
+set `BIP_KEEP_MODEL_FILES=true` on the API (they then use Storage space).
 
 For .pbix files in the hundreds of MB or above 1 GB, run the API on a normal
 server instead: the repo's `Dockerfile` works on Render, Railway, Fly.io or

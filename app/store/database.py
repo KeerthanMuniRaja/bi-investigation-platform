@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import threading
 from pathlib import Path
@@ -57,6 +58,15 @@ class FileRecord(BaseModel):
     sheets: list[dict] = Field(default_factory=list)
     uploaded_at: str = Field(default_factory=lambda: utcnow().isoformat())
     blob_key: Optional[str] = None  # where the file lives in cloud storage, if used
+    kept: bool = True               # False: the original was removed after reading (its snapshot has what's needed)
+
+
+class ModelSnapshot(BaseModel):
+    """What was read from a Power BI file (model, report, first rows of each
+    table), so the app never has to read — or keep — the file again."""
+    connection_id: str
+    data: dict
+    saved_at: str = Field(default_factory=lambda: utcnow().isoformat())
 
 
 class DocumentDB(Protocol):
@@ -416,6 +426,7 @@ class Store:
         self.data_reconciliations = Collection(self.db, "data_reconciliations", DataReconciliation, "reconciliation")
         self.definitions = Collection(self.db, "definitions", ReconciliationDefinition, "template")
         self.investigations = Collection(self.db, "investigations", Investigation, "investigation")
+        self.model_snapshots = Collection(self.db, "model_snapshots", ModelSnapshot, "model snapshot")
 
         self._connectors: dict[str, BIConnector] = {}
         self._secrets: dict[str, dict[str, str]] = {}
@@ -452,6 +463,7 @@ class Store:
         return record
 
     def remove_connection(self, connection_id: str) -> bool:
+        self.model_snapshots.delete(connection_id)
         with self._lock:
             self._connectors.pop(connection_id, None)  # also frees a parsed model held in memory
             self._secrets.pop(connection_id, None)
@@ -464,7 +476,9 @@ class Store:
         with self._lock:
             if connection_id not in self._connectors:
                 record = self.connection_records[connection_id]
-                self._connectors[connection_id] = build_connector(record, self._secrets.get(connection_id, {}), self.resolve_file)
+                snap = self.model_snapshots.get(connection_id) if record.platform == "pbix" else None
+                self._connectors[connection_id] = build_connector(record, self._secrets.get(connection_id, {}), self.resolve_file,
+                                                                  snapshot=snap.data if snap else None)
             return self._connectors[connection_id]
 
     def has_secrets(self, connection_id: str) -> bool:
@@ -483,8 +497,31 @@ class Store:
                 record.synced_workspaces = [workspace_id]
                 record.last_synced_at = utcnow().isoformat()
 
-            self.connection_records.update(connection_id, mark)
+            record = self.connection_records.update(connection_id, mark)
+            # a Power BI file read for the first time: save what was read (older dashboards too)
+            if record.platform == "pbix" and connection_id not in self.model_snapshots and hasattr(connector, "snapshot"):
+                self.model_snapshots[connection_id] = ModelSnapshot(connection_id=connection_id, data=connector.snapshot())
             return graph, warnings
+
+    def release_model_file(self, connection_id: str) -> bool:
+        """After a Power BI file has been read and its snapshot saved, delete
+        the original (cloud copy and local copy) to save storage. Returns
+        whether it was removed."""
+        record = self.connection_records[connection_id]
+        if record.platform != "pbix" or connection_id not in self.model_snapshots:
+            return False
+        for file_id in record.file_ids:
+            f = self.files.get(file_id)
+            if f is None or not f.kept:
+                continue
+            if f.blob_key:
+                self.blobs.delete(f.blob_key)
+            local = self.upload_dir / f.stored_as
+            local.unlink(missing_ok=True)
+            shutil.rmtree(local.parent / f"{local.stem}_pbip", ignore_errors=True)  # an unpacked PBIP zip
+            f.kept, f.blob_key = False, None
+            self.files[file_id] = f
+        return True
 
     def graph_for(self, connection_id: str) -> GraphStore:
         """The connection's lineage graph, rebuilt from the connector after
@@ -532,6 +569,8 @@ class Store:
         doesn't have it yet (new instance, redeploy) downloads it first."""
         record = self.files[file_id]
         path = self.upload_dir / record.stored_as
+        if not record.kept:
+            raise FileNotFoundError(f"{record.name} isn't kept any more (only what was read from it is).")
         if not path.exists() and record.blob_key:
             with self._conn_lock(f"file:{file_id}"):
                 if not path.exists():

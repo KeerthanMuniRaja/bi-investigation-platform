@@ -193,3 +193,70 @@ def test_measures_still_need_the_engine():
     visual = VisualDef(id="V", title="KPI", visual_type="card", measures=[FieldRef("Sales", "Total Sales", "measure")])
     with pytest.raises(CapabilityError, match="Power BI engine"):
         _rows(_StarSchema(visual))
+
+
+# ---------------------------------------------------------------- snapshots
+def test_a_snapshot_rebuilds_the_same_model_without_the_file():
+    """What was read from a file is saved as JSON; the app then works from it
+    (the original can be deleted to save storage)."""
+    import json
+
+    from app.connectors.model_file import load_model_file, model_from_snapshot, model_to_snapshot
+
+    model, _ = load_model_file(Path(__file__).resolve().parent.parent / "fixtures" / "sample_pbip")
+    restored = model_from_snapshot(json.loads(json.dumps(model_to_snapshot(model))))
+    assert [t.model_dump() for t in restored.tables] == [t.model_dump() for t in model.tables]
+    assert {k: [c.model_dump() for c in v] for k, v in restored.columns.items()} == {k: [c.model_dump() for c in v] for k, v in model.columns.items()}
+    assert [m.model_dump() for m in restored.measures] == [m.model_dump() for m in model.measures]
+    assert [r.model_dump() for r in restored.relationships] == [r.model_dump() for r in model.relationships]
+    assert restored.pages == model.pages and restored.report_filters == model.report_filters
+
+
+def test_previews_come_from_the_snapshot_and_full_data_explains_what_is_missing():
+    from app.connectors.model_file import FILE_NOT_KEPT, LoadedModel, model_to_snapshot
+
+    snap = model_to_snapshot(LoadedModel(name="Sales", file_format="pbix"),
+                             previews={"Sales": {"columns": ["Region", "Amount"], "rows": [["North", 10], ["South", 20], ["East", 5]]}})
+    conn = ModelFileConnector(None, "Sales.pbix", snapshot=snap, file_resolver=lambda: (_ for _ in ()).throw(FileNotFoundError("gone")))
+    preview = conn.get_table_data("Sales", limit=2)
+    assert preview.columns == ["Region", "Amount"] and preview.rows == [["North", 10], ["South", 20]]
+    with pytest.raises(CapabilityError) as e:
+        conn.get_table_data("Sales")                      # every row: needs the original
+    assert str(e.value) == FILE_NOT_KEPT
+
+
+def test_releasing_the_original_keeps_the_dashboard_working(isolated_store):
+    """After reading, the store saves the snapshot; releasing the file deletes
+    it (and its cloud copy) but the dashboard still opens from the snapshot."""
+    from app.store.database import FileRecord, ModelSnapshot
+    from app.connectors.model_file import LoadedModel, model_to_snapshot
+    from app.connectors.registry import ConnectionRecord
+
+    store = isolated_store
+    deleted: list[str] = []
+    store.blobs.delete = deleted.append                    # stand-in for cloud storage
+    (store.upload_dir / "FILE0001_x_Sales.pbix").write_bytes(b"pbix bytes")
+    store.files["FILE0001"] = FileRecord(file_id="FILE0001", name="Sales.pbix", stored_as="FILE0001_x_Sales.pbix", size=10, kind="model",
+                                         blob_key="local/FILE0001_x_Sales.pbix")
+    store.connection_records["CONN0001"] = ConnectionRecord(id="CONN0001", name="Sales", platform="pbix", file_ids=["FILE0001"], workspace_id="file")
+    store.model_snapshots["CONN0001"] = ModelSnapshot(connection_id="CONN0001", data=model_to_snapshot(LoadedModel(name="Sales", file_format="pbix")))
+
+    assert store.release_model_file("CONN0001")
+    record = store.files["FILE0001"]
+    assert not record.kept and record.blob_key is None and deleted == ["local/FILE0001_x_Sales.pbix"]
+    assert not (store.upload_dir / "FILE0001_x_Sales.pbix").exists()
+    with pytest.raises(FileNotFoundError):
+        store.resolve_file("FILE0001")
+    assert store.connector("CONN0001").model.name == "Sales"   # opens from the snapshot, no file needed
+    store.remove_connection("CONN0001")
+    assert "CONN0001" not in store.model_snapshots
+
+
+def test_model_files_are_kept_only_when_storage_is_free(isolated_store, monkeypatch):
+    from app.services.recon_service import keep_model_files
+
+    assert keep_model_files(isolated_store) is True          # local disk: keep
+    isolated_store.blobs.enabled = True
+    assert keep_model_files(isolated_store) is False         # cloud storage: release after reading
+    monkeypatch.setenv("BIP_KEEP_MODEL_FILES", "true")
+    assert keep_model_files(isolated_store) is True

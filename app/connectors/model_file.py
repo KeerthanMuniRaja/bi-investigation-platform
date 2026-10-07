@@ -25,7 +25,7 @@ import threading
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from app.connectors.base import (
     BIConnector,
@@ -646,13 +646,84 @@ def load_model_file(path: Path, extract_dir: Optional[Path] = None) -> tuple[Loa
     raise ValueError(f"Unsupported model file '{ext}'. Upload a .pbix, .pbit, .bim or a zipped PBIP project.")
 
 
+# --------------------------------------------------------------- snapshots
+# What was read from a file, saved as JSON: the model, the report and the
+# first rows of each table. Once saved, the app works from it — the original
+# file isn't needed again (except to compute a visual's values from all its
+# rows), so it doesn't have to be kept.
+SNAPSHOT_VERSION = 1
+FILE_NOT_KEPT = ("This needs every row of the data, which only the original .pbix has — and it isn't kept (to save storage). "
+                 "Upload the file again to use this.")
+PREVIEW_ROWS = 50
+PREVIEW_MAX_TABLE_ROWS = 500_000   # bigger tables are skipped: reading them takes too long
+PREVIEW_TIME_BUDGET = 45.0          # seconds for all previews together (serverless time limits)
+PREVIEW_KINDS = ("import", "entered_data", "calculated")
+
+
+def model_to_snapshot(model: LoadedModel, previews: Optional[dict] = None) -> dict:
+    from dataclasses import asdict
+
+    return {
+        "version": SNAPSHOT_VERSION, "name": model.name, "file_format": model.file_format,
+        "tables": [t.model_dump(mode="json") for t in model.tables],
+        "columns": {k: [c.model_dump(mode="json") for c in v] for k, v in model.columns.items()},
+        "measures": [m.model_dump(mode="json") for m in model.measures],
+        "relationships": [r.model_dump(mode="json") for r in model.relationships],
+        "pages": [asdict(p) for p in model.pages],
+        "report_filters": asdict(model.report_filters),
+        "row_counts": model.row_counts, "unresolved": model.unresolved, "warnings": model.warnings,
+        "previews": previews or {},
+    }
+
+
+def model_from_snapshot(data: dict) -> LoadedModel:
+    def ref(d: dict) -> FieldRef:
+        return FieldRef(**d)
+
+    def cond(d: dict) -> FilterCondition:
+        return FilterCondition(field=ref(d["field"]), operator=d["operator"], values=d.get("values", []))
+
+    def fset(d: dict) -> FilterSet:
+        return FilterSet(fields=[ref(x) for x in d.get("fields", [])], conditions=[cond(x) for x in d.get("conditions", [])], notes=d.get("notes", []))
+
+    def visual(d: dict) -> VisualDef:
+        return VisualDef(id=d["id"], title=d["title"], visual_type=d["visual_type"], measures=[ref(x) for x in d.get("measures", [])],
+                         group_by=[ref(x) for x in d.get("group_by", [])], filters=[ref(x) for x in d.get("filters", [])],
+                         conditions=[cond(x) for x in d.get("conditions", [])], filter_notes=d.get("filter_notes", []))
+
+    return LoadedModel(
+        name=data["name"], file_format=data["file_format"],
+        tables=[Table.model_validate(t) for t in data.get("tables", [])],
+        columns={k: [Column.model_validate(c) for c in v] for k, v in data.get("columns", {}).items()},
+        measures=[Measure.model_validate(m) for m in data.get("measures", [])],
+        relationships=[Relationship.model_validate(r) for r in data.get("relationships", [])],
+        pages=[LoadedPage(id=p["id"], name=p["name"], visuals=[visual(v) for v in p.get("visuals", [])], filters=fset(p.get("filters", {})),
+                          hidden=p.get("hidden", False), other_visuals=p.get("other_visuals", 0)) for p in data.get("pages", [])],
+        report_filters=fset(data.get("report_filters", {})),
+        row_counts=data.get("row_counts", {}), unresolved=data.get("unresolved", {}), warnings=data.get("warnings", []),
+        has_data=data.get("file_format") == "pbix",
+    )
+
+
+def _frame_rows(frame) -> QueryResult:
+    frame = frame.astype(object).where(frame.notna(), None)
+    rows = json.loads(json.dumps(frame.values.tolist(), default=str))  # dates, decimals... as JSON-safe values
+    return QueryResult(columns=[str(c) for c in frame.columns], rows=rows)
+
+
 # -------------------------------------------------------------- connector
 class ModelFileConnector(BIConnector):
+    """A Power BI file. Works from the file itself, or from a saved snapshot
+    of it (then the file is only opened — fetched first if need be — to
+    compute a visual's values from all its rows)."""
     platform_name = "powerbi"
 
-    def __init__(self, path: Path, display_name: Optional[str] = None):
-        self.path = Path(path)
-        self.display_name = display_name or self.path.stem
+    def __init__(self, path: Optional[Path], display_name: Optional[str] = None, snapshot: Optional[dict] = None,
+                 file_resolver: Optional[Callable[[], Path]] = None):
+        self.path = Path(path) if path else None
+        self.display_name = display_name or (self.path.stem if self.path else "model")
+        self._snapshot = snapshot
+        self._file_resolver = file_resolver
         self._model: Optional[LoadedModel] = None
         self._pbix = None
         self._load_lock = threading.Lock()
@@ -662,13 +733,60 @@ class ModelFileConnector(BIConnector):
         if self._model is None:
             with self._load_lock:  # concurrent first requests read the file once
                 if self._model is None:
-                    model, self._pbix = load_model_file(self.path, self.path.parent / f"{self.path.stem}_pbip")
+                    if self._snapshot is not None:
+                        model = model_from_snapshot(self._snapshot)
+                    else:
+                        model, self._pbix = load_model_file(self.path, self.path.parent / f"{self.path.stem}_pbip")
                     model.name = Path(self.display_name).stem
                     self._model = model
         return self._model
 
+    def snapshot(self, previews: bool = True) -> dict:
+        """Everything the app needs later, as JSON (plus the first rows of each table)."""
+        return model_to_snapshot(self.model, self._previews() if previews else None)
+
+    def _previews(self) -> dict:
+        if self.model.file_format != "pbix":
+            return {}
+        import time
+
+        out: dict = {}
+        started = time.monotonic()
+        try:
+            px = self._file()
+        except CapabilityError:
+            return {}
+        for t in self.model.tables:
+            if t.kind not in PREVIEW_KINDS or (self.model.row_counts.get(t.name) or 0) > PREVIEW_MAX_TABLE_ROWS:
+                continue
+            if time.monotonic() - started > PREVIEW_TIME_BUDGET:
+                break
+            try:
+                out[t.name] = _frame_rows(px.get_table(t.name).head(PREVIEW_ROWS)).model_dump()
+            except Exception:  # noqa: BLE001 - DirectQuery / not refreshed: no stored rows
+                continue
+        return out
+
+    def _file(self):
+        """The parsed .pbix, for reading stored table rows."""
+        if self._pbix is None:
+            with self._load_lock:
+                if self._pbix is None:
+                    path = self.path
+                    if (path is None or not path.exists()) and self._file_resolver is not None:
+                        try:
+                            path = self._file_resolver()
+                        except (FileNotFoundError, KeyError) as e:
+                            raise CapabilityError(FILE_NOT_KEPT) from e
+                    if path is None or not path.exists():
+                        raise CapabilityError(FILE_NOT_KEPT)
+                    from pbixray import PBIXRay
+
+                    self._pbix = PBIXRay(str(path))
+        return self._pbix
+
     def capabilities(self) -> ConnectorCapabilities:
-        data = CapabilityStatus.PARTIALLY_CAPABLE if self.path.suffix.lower() == ".pbix" else CapabilityStatus.UNSUPPORTED
+        data = CapabilityStatus.PARTIALLY_CAPABLE if self.model.file_format == "pbix" else CapabilityStatus.UNSUPPORTED
         return ConnectorCapabilities(
             metadata_api=CapabilityStatus.NOT_AVAILABLE,
             execute_query=CapabilityStatus.UNSUPPORTED,
@@ -736,17 +854,19 @@ class ModelFileConnector(BIConnector):
         raise CapabilityError("DAX queries need the Power BI engine — connect to the published dataset (Power BI live) to run them.")
 
     def get_table_data(self, table: str, limit: Optional[int] = None) -> QueryResult:
-        if self.path.suffix.lower() != ".pbix":
+        if self.model.file_format != "pbix":
             raise CapabilityError("Only .pbix files contain data; .pbit/.bim/PBIP files hold the model definition only.")
-        self.model  # ensure loaded
+        saved = (self._snapshot or {}).get("previews", {}).get(table)
+        if saved is not None and limit is not None and limit <= PREVIEW_ROWS:
+            return QueryResult(columns=saved["columns"], rows=saved["rows"][:max(limit, 0)])
+        px = self._file()
         try:
-            frame = self._pbix.get_table(table)
+            frame = px.get_table(table)
         except Exception as e:  # noqa: BLE001
             raise CapabilityError(f"Table '{table}' has no data stored in the file (DirectQuery or not yet refreshed?): {e}") from e
         if limit is not None:
             frame = frame.head(max(limit, 0))
-        frame = frame.astype(object).where(frame.notna(), None)
-        return QueryResult(columns=[str(c) for c in frame.columns], rows=frame.values.tolist())
+        return _frame_rows(frame)
 
     def get_visual_data(self, report_id: str, page_id: str, visual_id: str, filters: list[FilterContext]) -> QueryResult:
         """Visuals built from columns (plain aggregations such as Sum of

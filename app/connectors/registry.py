@@ -72,11 +72,17 @@ def build_connector(
     record: ConnectionRecord,
     secrets: dict[str, str],
     resolve_file: Callable[[str], tuple[str, Path]],
+    snapshot: Optional[dict] = None,
 ) -> BIConnector:
     if record.platform == "pbix":
         if not record.file_ids:
             raise ValueError("No Power BI file attached to this connection — upload it on the Power BI models page.")
-        name, path = resolve_file(record.file_ids[0])
+        file_id = record.file_ids[0]
+        if snapshot is not None:
+            # what was read from the file is saved: no need to fetch or re-read the file itself
+            return ModelFileConnector(None, display_name=f"{record.name}.pbix", snapshot=snapshot,
+                                      file_resolver=lambda: resolve_file(file_id)[1])
+        name, path = resolve_file(file_id)
         return ModelFileConnector(path, display_name=name)
     if record.platform == "files":
         files = []
