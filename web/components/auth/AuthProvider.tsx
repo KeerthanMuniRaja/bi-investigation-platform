@@ -1,39 +1,35 @@
 "use client";
 
 /*
- * Who is signed in, and the gate in front of the app. Signed out (or not
- * allowed) people see the sign-in screen; the app stays mounted but hidden
- * behind it and its requests wait for a session (lib/supabase.ts). With
- * sign-in off (no Supabase settings) the app opens straight away, as a
- * single local workspace.
+ * Who is signed in, and the gate in front of the app. The API says whether
+ * sign-in is on (GET /api/info). When it is, signed-out people see the
+ * sign-in screen; the app stays mounted but hidden behind it and its
+ * requests wait for a session (lib/session.ts). When it's off, the app
+ * opens straight away as a single local workspace.
  */
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { mutate } from "swr";
-import type { Session } from "@supabase/supabase-js";
-import { AUTH_EVENT, authEnabled, googleEnabled, setSignedIn, supabase, type AuthProblem } from "@/lib/supabase";
-import { Denied, SignIn } from "./SignIn";
+import { ApiError, api, openApi } from "@/lib/api";
+import { AUTH_EVENT, clearSession, loadSession, saveSession, setOpen, type Session, type SessionUser } from "@/lib/session";
+import { Offline, SignIn } from "./SignIn";
 
-export type Account = { email: string; name: string };
-type Status = "disabled" | "loading" | "signed-out" | "signed-in" | "denied";
-type AuthState = { status: Status; account: Account | null; message: string | null };
+type Status = "loading" | "offline" | "disabled" | "signed-out" | "signed-in";
+type AuthState = { status: Status; account: SessionUser | null; message: string | null; signup: boolean };
+type Info = { auth: boolean; signup: boolean };
 
-const NEXT_KEY = "bip-next";
-const CALLBACK = "/auth/callback";
-
-const Ctx = createContext<{ state: AuthState; signIn: () => Promise<void>; signOut: () => Promise<void> }>({
-  state: { status: "disabled", account: null, message: null },
-  signIn: async () => {},
-  signOut: async () => {},
+type AuthApi = {
+  state: AuthState;
+  signIn: (username: string, password: string) => Promise<void>;
+  signUp: (username: string, password: string, name: string) => Promise<void>;
+  signOut: () => void;
+  changePassword: (current: string, next: string) => Promise<void>;
+};
+const Ctx = createContext<AuthApi>({
+  state: { status: "disabled", account: null, message: null, signup: false },
+  signIn: async () => {}, signUp: async () => {}, signOut: () => {}, changePassword: async () => {},
 });
 export const useAuth = () => useContext(Ctx);
-
-function accountOf(session: Session | null): Account | null {
-  const u = session?.user;
-  if (!u?.email) return null;
-  const meta = (u.user_metadata || {}) as Record<string, string | undefined>;
-  return { email: u.email.toLowerCase(), name: meta.full_name || meta.name || u.email.split("@")[0] };
-}
 
 /** drop everything cached for the previous person: API responses and remembered places */
 function forgetWorkspace() {
@@ -45,87 +41,85 @@ function forgetWorkspace() {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
-  const pathname = usePathname();
-  const [state, setState] = useState<AuthState>(() => ({ status: authEnabled ? "loading" : "disabled", account: null, message: null }));
-  const lastEmail = useRef<string | null>(null);
-  useEffect(() => { setSignedIn(state.status === "signed-in"); }, [state.status]);
+  const [state, setState] = useState<AuthState>({ status: "loading", account: null, message: null, signup: false });
+  const lastUser = useRef<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
+  useEffect(() => { setOpen(state.status === "signed-in" || state.status === "disabled"); }, [state.status]);
+
+  // ask the API how sign-in works here, then restore a saved session
   useEffect(() => {
-    const sb = supabase();
-    if (!sb) return;
-    const apply = (session: Session | null, message: string | null = null) => {
-      const account = accountOf(session);
-      if (account?.email !== lastEmail.current) {
-        if (lastEmail.current) forgetWorkspace();  // a different person on this browser
-        lastEmail.current = account?.email ?? null;
+    let live = true;
+    (async () => {
+      let info: Info;
+      try {
+        info = await openApi<Info>("GET", "/api/info");
+      } catch (e) {
+        if (live) setState((s) => ({ ...s, status: "offline", message: (e as Error).message }));
+        return;
       }
-      setState((s) => (account ? { status: s.status === "denied" && s.account?.email === account.email ? "denied" : "signed-in", account, message: s.status === "denied" ? s.message : null }
-        : { status: "signed-out", account: null, message: message ?? (s.status === "loading" ? null : s.message) }));
-    };
-    // Google sends people back with ?error=... when they cancel or something fails
-    const params = new URLSearchParams(window.location.search);
-    const oauthError = params.get("error_description") || params.get("error");
-    sb.auth.getSession().then(({ data, error }) => apply(data.session, oauthError || error?.message || null));
-    const { data: sub } = sb.auth.onAuthStateChange((_event, session) => apply(session));
-    const onProblem = (e: Event) => {
-      const p = (e as CustomEvent<AuthProblem>).detail;
-      if (p.kind === "denied") setState((s) => ({ ...s, status: "denied", message: p.message }));
-      else {
-        // the API refused the token: try a refresh once, else back to the sign-in screen
-        sb.auth.refreshSession().then(({ error }) => {
-          if (error) void sb.auth.signOut().then(() => setState({ status: "signed-out", account: null, message: "Your session ended — sign in again." }));
-        });
+      if (!info.auth) { if (live) setState({ status: "disabled", account: null, message: null, signup: false }); return; }
+      const saved = loadSession();
+      if (!saved) { if (live) setState({ status: "signed-out", account: null, message: null, signup: info.signup }); return; }
+      try {
+        const me = await openApi<{ username: string; name: string }>("GET", "/me", undefined, saved.token);
+        lastUser.current = me.username;
+        if (live) setState({ status: "signed-in", account: { username: me.username, name: me.name }, message: null, signup: info.signup });
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) clearSession();
+        if (live) setState({ status: "signed-out", account: null, signup: info.signup,
+          message: e instanceof ApiError && e.status === 401 ? "Your session ended — sign in again." : (e as Error).message });
       }
+    })();
+    return () => { live = false; };
+  }, [attempt]);
+
+  // the API refused the token mid-session (expired, password changed elsewhere)
+  useEffect(() => {
+    const ended = (e: Event) => {
+      clearSession();
+      setState((s) => (s.status === "signed-in" ? { ...s, status: "signed-out", account: null, message: (e as CustomEvent<string>).detail || "Your session ended — sign in again." } : s));
     };
-    window.addEventListener(AUTH_EVENT, onProblem);
-    return () => { sub.subscription.unsubscribe(); window.removeEventListener(AUTH_EVENT, onProblem); };
+    window.addEventListener(AUTH_EVENT, ended);
+    return () => window.removeEventListener(AUTH_EVENT, ended);
   }, []);
 
-  // back from Google: continue to where the person was going
-  useEffect(() => {
-    if (state.status !== "signed-in" || pathname !== CALLBACK) return;
-    let next = "/";
-    try { next = sessionStorage.getItem(NEXT_KEY) || "/"; sessionStorage.removeItem(NEXT_KEY); } catch { /* ignore */ }
-    router.replace(next.startsWith("/") && !next.startsWith("//") ? next : "/");
-  }, [state.status, pathname, router]);
-
-  const signIn = useCallback(async () => {
-    const sb = supabase();
-    if (!sb) return;
-    try {
-      const here = window.location.pathname + window.location.search;
-      sessionStorage.setItem(NEXT_KEY, here.startsWith(CALLBACK) ? "/" : here);
-    } catch { /* ignore */ }
-    // Supabase answers a disabled provider with a bare JSON error page: check first, explain here
-    if (!(await googleEnabled())) {
-      setState((s) => ({ ...s, status: "signed-out", message: "Google sign-in isn't switched on for this app yet. In Supabase, open Authentication → Sign In / Providers → Google, turn it on and add the Google client ID and secret." }));
-      return;
-    }
-    const { error } = await sb.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${window.location.origin}${CALLBACK}`, queryParams: { prompt: "select_account" } },
-    });
-    if (error) setState((s) => ({ ...s, status: "signed-out", message: error.message }));
+  const begin = useCallback((session: Session) => {
+    if (lastUser.current && lastUser.current !== session.user.username) forgetWorkspace();  // someone else on this browser
+    lastUser.current = session.user.username;
+    saveSession(session);
+    setState((s) => ({ ...s, status: "signed-in", account: session.user, message: null }));
   }, []);
 
-  const signOut = useCallback(async () => {
-    const sb = supabase();
-    if (!sb) return;
-    setSignedIn(false);
-    await sb.auth.signOut();
+  const signIn = useCallback(async (username: string, password: string) => {
+    begin(await openApi<Session>("POST", "/auth/login", { username, password }));
+  }, [begin]);
+
+  const signUp = useCallback(async (username: string, password: string, name: string) => {
+    begin(await openApi<Session>("POST", "/auth/signup", { username, password, display_name: name || null }));
+  }, [begin]);
+
+  const signOut = useCallback(() => {
+    setOpen(false);
+    clearSession();
     forgetWorkspace();
-    lastEmail.current = null;
-    setState({ status: "signed-out", account: null, message: null });
+    lastUser.current = null;
+    setState((s) => ({ ...s, status: "signed-out", account: null, message: null }));
     router.replace("/");
   }, [router]);
+
+  const changePassword = useCallback(async (current: string, next: string) => {
+    const session = await api<Session>("POST", "/auth/password", { current_password: current, new_password: next });
+    saveSession(session);
+  }, []);
 
   const open = state.status === "signed-in" || state.status === "disabled";
   let screen: ReactNode = null;
   if (state.status === "loading") screen = <div className="app-boot"><span className="spinner" /></div>;
-  else if (state.status === "signed-out") screen = <SignIn onSignIn={signIn} message={state.message} />;
-  else if (state.status === "denied") screen = <Denied account={state.account} message={state.message} onSignOut={signOut} />;
+  else if (state.status === "offline") screen = <Offline message={state.message} onRetry={() => { setState((s) => ({ ...s, status: "loading" })); setAttempt((n) => n + 1); }} />;
+  else if (state.status === "signed-out") screen = <SignIn onSignIn={signIn} onSignUp={signUp} signup={state.signup} message={state.message} />;
   return (
-    <Ctx.Provider value={{ state, signIn, signOut }}>
+    <Ctx.Provider value={{ state, signIn, signUp, signOut, changePassword }}>
       {/* always rendered (hidden while signed out) so every page keeps a real, mounted route */}
       <div style={{ display: open ? "contents" : "none" }} aria-hidden={!open}>{children}</div>
       {screen}

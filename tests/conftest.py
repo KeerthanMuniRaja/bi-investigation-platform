@@ -7,8 +7,8 @@ from app.store.database import Store, reset_store
 from tests.fakes import MockConnector
 
 
-CLOUD_SETTINGS = ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_JWT_SECRET",
-                  "BIP_ALLOWED_EMAILS", "BIP_ALLOWED_DOMAINS", "BIP_STORAGE_BUCKET")
+CLOUD_SETTINGS = ("DATABASE_URL", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BIP_STORAGE_BUCKET",
+                  "BIP_AUTH", "BIP_SECRET_KEY", "BIP_ALLOW_SIGNUP", "BIP_SESSION_DAYS")
 
 
 @pytest.fixture(autouse=True)

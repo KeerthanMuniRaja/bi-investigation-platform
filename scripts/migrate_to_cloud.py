@@ -1,9 +1,9 @@
 """
 Copy the local workspace (SQLite + uploads folder) into the cloud setup,
-owned by one person.
+owned by one account.
 
-    python scripts/migrate_to_cloud.py --owner you@gmail.com            # dry run: shows what would move
-    python scripts/migrate_to_cloud.py --owner you@gmail.com --apply
+    python scripts/migrate_to_cloud.py --owner keerthan            # dry run: shows what would move
+    python scripts/migrate_to_cloud.py --owner keerthan --apply
 
 Reads DATABASE_URL, SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from the
 environment or the project's .env. Records keep their ids; record counters
@@ -33,14 +33,14 @@ def main() -> int:
     except ImportError:
         pass
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--owner", required=True, help="email of the Google account that should own the records")
+    ap.add_argument("--owner", required=True, help="username of the account that should own the records")
     ap.add_argument("--data-dir", default=os.environ.get("BIP_DATA_DIR", str(ROOT / "data")), help="local data folder (default ./data)")
     ap.add_argument("--from-owner", default="local", help="owner of the local records to copy (default: local)")
     ap.add_argument("--apply", action="store_true", help="actually copy (otherwise only report)")
     args = ap.parse_args()
     owner = args.owner.strip().lower()
-    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", owner):
-        ap.error("--owner must be an email address")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,31}", owner):
+        ap.error("--owner must be a username (3–32 letters, numbers, dots, dashes or underscores)")
     if not os.environ.get("DATABASE_URL"):
         ap.error("DATABASE_URL isn't set (put it in .env) — that's where the records go")
 

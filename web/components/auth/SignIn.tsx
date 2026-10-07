@@ -1,21 +1,9 @@
 "use client";
 
-import { AnimatePresence, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from "motion/react";
-import { useEffect, useState, type MouseEvent } from "react";
-import { fadeUp, softSpring, spring } from "@/lib/motion";
+import { AnimatePresence, LayoutGroup, motion, useAnimate, useMotionValue, useReducedMotion, useSpring, useTransform } from "motion/react";
+import { useEffect, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { collapse, fadeUp, softSpring, spring } from "@/lib/motion";
 import { AlertBox, I, Icon, Spinner } from "@/components/ui";
-import type { Account } from "./AuthProvider";
-
-function GoogleMark() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">
-      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
-      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
-      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" />
-      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" />
-    </svg>
-  );
-}
 
 function Brand({ light = false }: { light?: boolean }) {
   return (
@@ -131,9 +119,167 @@ function TiltCard({ children, className = "" }: { children: React.ReactNode; cla
   );
 }
 
-/** the screen people see before signing in */
-export function SignIn({ onSignIn, message }: { onSignIn: () => Promise<void>; message: string | null }) {
+/* ------------------------------------------------------------ the form */
+function strength(pw: string): [number, string] {
+  let score = 0;
+  if (pw.length >= 8) score++;
+  if (pw.length >= 12) score++;
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score++;
+  if (/\d/.test(pw) && /[^A-Za-z0-9]/.test(pw)) score++;
+  return [score, ["Too short", "Weak", "Fair", "Good", "Strong"][pw.length < 8 ? 0 : Math.max(1, score)]];
+}
+
+function Field({ icon, label, children, right, hint }: { icon: string; label: string; children: ReactNode; right?: ReactNode; hint?: ReactNode }) {
+  return (
+    <label className="af-field">
+      <span className="af-label">{label}</span>
+      <span className="af-input"><Icon d={icon} />{children}{right}</span>
+      {hint}
+    </label>
+  );
+}
+
+function AuthForm({ onSignIn, onSignUp, signup, message }: {
+  onSignIn: (u: string, p: string) => Promise<void>; onSignUp: (u: string, p: string, n: string) => Promise<void>; signup: boolean; message: string | null;
+}) {
+  const [mode, setMode] = useState<"in" | "up">("in");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [name, setName] = useState("");
+  const [show, setShow] = useState(false);
+  const [caps, setCaps] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [scope, animate] = useAnimate();
+  const creating = mode === "up";
+  const [score, label] = strength(password);
+
+  const fail = (msg: string) => {
+    setError(msg);
+    void animate(scope.current, { x: [0, -10, 10, -6, 6, -2, 0] }, { duration: 0.45 });
+  };
+  const switchTo = (m: "in" | "up") => { setMode(m); setError(null); setConfirm(""); };
+  const capsCheck = (e: KeyboardEvent<HTMLInputElement>) => setCaps(e.getModifierState?.("CapsLock") ?? false);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!username.trim() || !password) return fail("Enter your username and password.");
+    if (creating && password.length < 8) return fail("Use at least 8 characters for your password.");
+    if (creating && password !== confirm) return fail("The two passwords don't match.");
+    setBusy(true);
+    setError(null);
+    try {
+      if (creating) await onSignUp(username.trim(), password, name.trim());
+      else await onSignIn(username.trim(), password);
+    } catch (err) {
+      fail((err as Error).message);
+      setPassword("");
+      setConfirm("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <motion.form ref={scope} className="si-card-body" onSubmit={submit} noValidate initial="hidden" animate="show"
+      variants={{ hidden: {}, show: { transition: { staggerChildren: 0.06, delayChildren: 0.3 } } }}>
+      <motion.div variants={fadeUp} className="si-welcome"><span className="si-wave" aria-hidden="true">👋</span>{creating ? "New here?" : "Welcome back"}</motion.div>
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.h2 key={mode} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.2 }}>
+          {creating ? "Create your account" : "Sign in to continue"}
+        </motion.h2>
+      </AnimatePresence>
+      {signup ? (
+        <motion.div variants={fadeUp}>
+          <LayoutGroup id="auth-tabs">
+            <div className="af-tabs" role="tablist">
+              {([["in", "Sign in"], ["up", "Create account"]] as const).map(([m, text]) => (
+                <button key={m} type="button" role="tab" aria-selected={mode === m} className={mode === m ? "on" : ""} onClick={() => switchTo(m)}>
+                  {mode === m ? <motion.span layoutId="auth-tab" className="af-tab-pill" transition={spring} /> : null}
+                  <span>{text}</span>
+                </button>
+              ))}
+            </div>
+          </LayoutGroup>
+        </motion.div>
+      ) : null}
+      <AnimatePresence initial={false}>
+        {error || message ? (
+          <motion.div key={error || message} initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
+            <AlertBox kind={error ? "bad" : "warn"} items={[error || message]} />
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <motion.div variants={fadeUp}>
+        <Field icon={I.user} label="Username">
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false}
+            placeholder={creating ? "e.g. keerthan" : "Your username"} autoFocus />
+        </Field>
+      </motion.div>
+      <AnimatePresence initial={false}>
+        {creating ? (
+          <motion.div key="name" initial="closed" animate="open" exit="closed" variants={collapse} style={{ overflow: "hidden" }}>
+            <Field icon={I.note} label="Your name (optional)">
+              <input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" placeholder="Shown in the app" />
+            </Field>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <motion.div variants={fadeUp}>
+        <Field icon={I.lock} label="Password"
+          right={<button type="button" className="af-eye" onClick={() => setShow(!show)} aria-label={show ? "Hide password" : "Show password"} title={show ? "Hide password" : "Show password"}>
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.span key={String(show)} initial={{ opacity: 0, scale: 0.6 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.6 }} transition={{ duration: 0.12 }} style={{ display: "grid" }}>
+                <Icon d={show ? I.eyeOff : I.eye} />
+              </motion.span>
+            </AnimatePresence>
+          </button>}
+          hint={
+            <AnimatePresence initial={false}>
+              {caps ? <motion.span key="caps" className="af-caps" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>Caps Lock is on</motion.span> : null}
+              {creating && password ? (
+                <motion.span key="meter" className="af-meter" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                  <span className="af-bar"><motion.span className={`s${score}`} animate={{ width: `${password.length < 8 ? 12 : 25 + score * 18.75}%` }} transition={spring} /></span>
+                  <span className="af-meter-text">{label}</span>
+                </motion.span>
+              ) : null}
+            </AnimatePresence>
+          }>
+          <input type={show ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} onKeyUp={capsCheck} onKeyDown={capsCheck}
+            autoComplete={creating ? "new-password" : "current-password"} placeholder={creating ? "At least 8 characters" : "Your password"} />
+        </Field>
+      </motion.div>
+      <AnimatePresence initial={false}>
+        {creating ? (
+          <motion.div key="confirm" initial="closed" animate="open" exit="closed" variants={collapse} style={{ overflow: "hidden" }}>
+            <Field icon={I.lock} label="Repeat password"
+              right={confirm ? <motion.span className={`af-match ${confirm === password ? "ok" : "no"}`} initial={{ scale: 0 }} animate={{ scale: 1 }} transition={spring}>
+                <Icon d={confirm === password ? I.check : I.close} size={14} /></motion.span> : null}>
+              <input type={show ? "text" : "password"} value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" placeholder="Type it again" />
+            </Field>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <motion.button variants={fadeUp} type="submit" className="af-submit" disabled={busy} whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }}>
+        <span className="af-shine" aria-hidden="true" />
+        {busy ? <Spinner /> : <Icon d={creating ? I.plus : I.arrow} />}
+        <span>{busy ? (creating ? "Creating your account…" : "Signing in…") : creating ? "Create account" : "Sign in"}</span>
+      </motion.button>
+      <motion.p variants={fadeUp} className="af-foot">
+        {signup
+          ? creating ? <>Already have an account? <button type="button" onClick={() => switchTo("in")}>Sign in</button></>
+                     : <>New here? <button type="button" onClick={() => switchTo("up")}>Create an account</button></>
+          : "Accounts are created by the administrator."}
+      </motion.p>
+    </motion.form>
+  );
+}
+
+/** the screen people see before signing in */
+export function SignIn({ onSignIn, onSignUp, signup, message }: {
+  onSignIn: (u: string, p: string) => Promise<void>; onSignUp: (u: string, p: string, n: string) => Promise<void>; signup: boolean; message: string | null;
+}) {
   const stagger = { hidden: {}, show: { transition: { staggerChildren: 0.08, delayChildren: 0.05 } } };
   return (
     <div className="si-page">
@@ -158,34 +304,15 @@ export function SignIn({ onSignIn, message }: { onSignIn: () => Promise<void>; m
           ))}
         </motion.div>
       </motion.section>
-
       <section className="si-side">
-        <TiltCard>
-          <motion.div className="si-card-body" initial="hidden" animate="show" variants={{ hidden: {}, show: { transition: { staggerChildren: 0.07, delayChildren: 0.35 } } }}>
-            <motion.div variants={fadeUp} className="si-welcome"><span className="si-wave" aria-hidden="true">👋</span>Welcome back</motion.div>
-            <motion.h2 variants={fadeUp}>Sign in to continue</motion.h2>
-            <motion.p variants={fadeUp} className="muted">Use your Google account to open your dashboards, results and investigations.</motion.p>
-            <AnimatePresence>{message ? <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}><AlertBox kind="warn" items={[message]} /></motion.div> : null}</AnimatePresence>
-            <motion.button variants={fadeUp} className="si-google" disabled={busy} whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }}
-              onClick={async () => { setBusy(true); try { await onSignIn(); } finally { setBusy(false); } }}>
-              <span className="si-google-shine" aria-hidden="true" />
-              {busy ? <Spinner /> : <GoogleMark />}<span>{busy ? "Opening Google…" : "Continue with Google"}</span>
-            </motion.button>
-            <motion.div variants={fadeUp} className="si-divider"><span>What you get</span></motion.div>
-            <motion.ul variants={fadeUp} className="si-perks">
-              <li><Icon d={I.dash} size={15} />Your own private workspace</li>
-              <li><Icon d={I.lineage} size={15} />Full lineage for every measure</li>
-              <li><Icon d={I.results} size={15} />Reconciliations you can re-run</li>
-            </motion.ul>
-          </motion.div>
-        </TiltCard>
+        <TiltCard><AuthForm onSignIn={onSignIn} onSignUp={onSignUp} signup={signup} message={message} /></TiltCard>
       </section>
     </div>
   );
 }
 
-/** signed in, but the API doesn't allow this account */
-export function Denied({ account, message, onSignOut }: { account: Account | null; message: string | null; onSignOut: () => Promise<void> }) {
+/** the API can't be reached */
+export function Offline({ message, onRetry }: { message: string | null; onRetry: () => void }) {
   return (
     <div className="si-page single">
       <div className="si-grid dim" aria-hidden="true" />
@@ -193,10 +320,10 @@ export function Denied({ account, message, onSignOut }: { account: Account | nul
         <div className="si-card-body">
           <Brand />
           <motion.div className="si-denied-ico" initial={{ scale: 0.5, rotate: -20 }} animate={{ scale: 1, rotate: 0 }} transition={spring}><Icon d={I.close} /></motion.div>
-          <h2>This account can&apos;t use the app</h2>
-          <p className="muted">{message || `${account?.email} isn't on the list of allowed accounts.`}</p>
-          <p className="muted small">Ask the person who runs this app to add your address, or sign in with a different Google account.</p>
-          <motion.button className="btn primary" onClick={onSignOut} whileHover={{ y: -2 }} whileTap={{ scale: 0.97 }}><Icon d={I.arrow} />Use a different account</motion.button>
+          <h2>Can&apos;t reach the server</h2>
+          <p className="muted">{message || "The app's API isn't answering."}</p>
+          <p className="muted small">If you run it yourself, start it with <code>npm run dev</code> in the <code>web</code> folder.</p>
+          <motion.button className="btn primary" onClick={onRetry} whileHover={{ y: -2 }} whileTap={{ scale: 0.97 }}><Icon d={I.reload} />Try again</motion.button>
         </div>
       </TiltCard>
     </div>

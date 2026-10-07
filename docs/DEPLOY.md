@@ -1,145 +1,131 @@
-# Going live: Google sign-in, cloud database, hosting
+# Going live: sign-in, cloud database, hosting
 
 This takes the app from "runs on my laptop" to a hosted site where people
-sign in with Google and each person sees only their own work.
+sign in with a **username and password** and each person sees only their
+own work.
 
 ```
 Browser ──► Vercel (web/, Next.js) ──► API host (app/, Python) ──► Supabase
-                                                                  ├─ Postgres  (records)
-                                                                  ├─ Storage   (uploaded files)
-                                                                  └─ Auth      (Google sign-in)
+                                                                  ├─ Postgres  (accounts + records)
+                                                                  └─ Storage   (uploaded files)
 ```
 
-Plan about an hour. You'll collect a few values as you go; the last section
-says where each one goes.
+Accounts are kept in the app's own database, in a `users` table: username,
+display name and a salted **scrypt hash** of the password (the password
+itself is never stored). Signing in gives the browser a signed token that
+lasts `BIP_SESSION_DAYS` days.
 
 ---
 
-## 1. Supabase project
+## 1. Supabase project (database + file storage)
 
-1. Go to https://supabase.com, sign in, and click **New project**.
-   Pick a name, a strong **database password** (save it), and the region
-   closest to your users.
-2. When it's ready, open **Project Settings → API** (or **API Keys**) and copy:
-   - **Project URL**: `https://<ref>.supabase.co`
-   - **anon / publishable key**: safe to put in the web app
-   - **service_role / secret key**: server only, never put it in the web app or in git
-3. Open **Connect** (top bar) → **Session pooler** and copy the URI. It looks like
+1. https://supabase.com → **New project**. Pick a name, a strong **database
+   password** (save it), and the region closest to your users.
+2. **Connect** (top bar) → **Session pooler** → copy the URI:
    `postgresql://postgres.<ref>:[YOUR-PASSWORD]@aws-0-<region>.pooler.supabase.com:5432/postgres`.
-   Put your database password in place of `[YOUR-PASSWORD]`.
+   Put your database password in place of `[YOUR-PASSWORD]`. This is `DATABASE_URL`.
+3. **Project Settings → API Keys**: copy the **Project URL** (`SUPABASE_URL`)
+   and the **secret / service_role key** (`SUPABASE_SERVICE_ROLE_KEY`). They
+   are only needed for file storage, and the key belongs on the API server
+   only.
 
-You don't need to create tables or a storage bucket. On first start the API
-creates its tables in a private `bip` schema (with row-level security on and
-no public access) and a private `bip-files` bucket.
+You don't need to create tables or a bucket. On first start the API creates
+`bip.users`, `bip.documents` and `bip.counters` in a private `bip` schema
+(row-level security on, no public access) and a private `bip-files` bucket.
 
-**File size limit:** Supabase's free plan accepts files up to **50 MB**.
-Bigger .pbix files need a paid plan, plus raising the limit under
+**File size limit:** the free plan accepts files up to **50 MB**. Bigger
+.pbix files need a paid plan, plus raising the limit under
 **Storage → Settings → Upload file size limit**.
 
-## 2. Google sign-in
-
-1. Go to https://console.cloud.google.com and create a project (or pick one).
-2. **APIs & Services → OAuth consent screen**:
-   - User type **External** (or **Internal** if everyone is in one Google Workspace).
-   - App name, support email and developer email.
-   - Under **Authorized domains** add `supabase.co`.
-   - Scopes: the defaults (`email`, `profile`, `openid`) are enough.
-   - While the app is in **Testing**, only the test users you list can sign
-     in. Click **Publish app** when you're ready for everyone.
-3. **APIs & Services → Credentials → Create credentials → OAuth client ID**:
-   - Application type: **Web application**.
-   - **Authorized JavaScript origins**: `http://localhost:3000` and your Vercel URL,
-     e.g. `https://bi-investigation-platform.vercel.app`.
-   - **Authorized redirect URIs**: `https://<ref>.supabase.co/auth/v1/callback`
-     (Supabase shows the exact value on its Google provider page).
-   - Copy the **Client ID** and **Client secret**.
-4. Back in Supabase: **Authentication → Sign In / Providers → Google**.
-   Turn it on and paste the Client ID and Client secret.
-5. Supabase **Authentication → URL Configuration**:
-   - **Site URL**: your Vercel URL.
-   - **Redirect URLs**: add
-     - `http://localhost:3000/auth/callback`
-     - `https://<your-app>.vercel.app/auth/callback`
-     - optional, for Vercel preview builds: `https://*-<your-team>.vercel.app/auth/callback`
-
-## 3. Host the API
+## 2. Host the API
 
 Any host that runs a Docker image works: Render, Railway, Fly.io, Azure App
 Service, Google Cloud Run. The repo's `Dockerfile` builds the API. Steps for
 **Render**:
 
 1. https://render.com → **New → Web Service** → connect the GitHub repo.
-2. Runtime **Docker** (it finds the `Dockerfile`). Pick an instance with at
-   least **2 GB RAM**, since large .pbix files are read in memory.
+2. Runtime **Docker**. Pick an instance with at least **2 GB RAM**, since
+   large .pbix files are read in memory.
 3. **Health check path**: `/health`.
 4. Add the environment variables from the table below (API column) and deploy.
-5. Copy the service URL, e.g. `https://bi-api.onrender.com`. Opening
-   `https://bi-api.onrender.com/health` should show `{"status":"ok"}`.
+5. Opening `https://<your-api>/health` should show `{"status":"ok"}`.
 
-Free instances that go to sleep make the first request slow. The data is
-safe either way: records live in Postgres and files in Storage, and the API
-re-downloads a file the first time it needs it.
-
-## 4. Host the web app on Vercel
+## 3. Host the web app on Vercel
 
 1. https://vercel.com → **Add New → Project** → import the GitHub repo.
-2. **Root Directory**: `web`. Framework: Next.js (detected).
-3. Add the environment variables from the table below (Vercel column) and deploy.
-4. Put the final Vercel URL into:
-   - the API's `BIP_CORS_ORIGINS` and `BIP_WEB_URL` (then redeploy the API);
-   - Supabase **Site URL** and **Redirect URLs** (step 2.5);
-   - Google **Authorized JavaScript origins** (step 2.3).
+2. **Root Directory**: `web`.
+3. Add `NEXT_PUBLIC_API_URL` = your API's URL, then deploy. The web app needs
+   no sign-in settings: it asks the API whether sign-in is on.
+4. Put the Vercel URL into the API's `BIP_CORS_ORIGINS` and `BIP_WEB_URL`,
+   then redeploy the API.
 
-## 5. Environment variables
+## 4. Environment variables
 
-| Variable | API host | Vercel | Value |
-|---|---|---|---|
-| `SUPABASE_URL` | ✅ | | Project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | ❌ never | service_role / secret key |
-| `DATABASE_URL` | ✅ | | Session pooler URI with your password |
-| `BIP_CORS_ORIGINS` | ✅ | | Vercel URL, e.g. `https://bi-investigation-platform.vercel.app` |
-| `BIP_WEB_URL` | ✅ | | same Vercel URL |
-| `BIP_ALLOWED_DOMAINS` | optional | | e.g. `jmangroup.com`: only these domains can sign in |
-| `BIP_ALLOWED_EMAILS` | optional | | e.g. `keerthanmuniraja@gmail.com`: extra individual addresses |
-| `SUPABASE_JWT_SECRET` | only for old projects | | legacy JWT secret; leave unset on new projects |
-| `NEXT_PUBLIC_API_URL` | | ✅ | API URL, e.g. `https://bi-api.onrender.com` |
-| `NEXT_PUBLIC_SUPABASE_URL` | | ✅ | Project URL |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | | ✅ | publishable key (`sb_publishable_…`) |
+| Variable | Where | Value |
+|---|---|---|
+| `BIP_AUTH` | API | `password`: turns sign-in on |
+| `BIP_SECRET_KEY` | API | long random string, the same on every API server: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `BIP_ALLOW_SIGNUP` | API | `true` (anyone can create an account) or `false` (only accounts you add) |
+| `BIP_SESSION_DAYS` | API | how long a sign-in lasts (default `7`) |
+| `DATABASE_URL` | API | Session pooler URI with your password |
+| `SUPABASE_URL` | API | Project URL (file storage) |
+| `SUPABASE_SERVICE_ROLE_KEY` | API only, never Vercel | secret / service_role key (file storage) |
+| `BIP_CORS_ORIGINS` | API | Vercel URL, e.g. `https://bi-investigation-platform.vercel.app` |
+| `BIP_WEB_URL` | API | same Vercel URL |
+| `NEXT_PUBLIC_API_URL` | Vercel | API URL, e.g. `https://bi-api.onrender.com` |
 
-With neither allow-list set, **any Google account** can sign in and get its
-own empty workspace. To keep it to your team, set `BIP_ALLOWED_DOMAINS`.
+If `BIP_SECRET_KEY` is missing, the API generates one and keeps it in
+`<BIP_DATA_DIR>/secret.key`. That's fine on your laptop, but on a host whose
+disk is wiped on redeploy everyone would be signed out each time, so set it.
 
-## 6. Bring over your existing local work (optional)
+## 5. Accounts
 
-Your current dashboards, results and investigations are in the local
-`data/` folder. To move them into your account in the cloud:
+- **Open sign-up** (`BIP_ALLOW_SIGNUP=true`): the sign-in page has a
+  **Create account** tab.
+- **Closed** (`false`): only you add accounts. The very first account can
+  always be created on the sign-in page, so you can set things up.
+- From the project folder (it uses the database in `.env`):
 
 ```bash
-# in the project folder, with SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and DATABASE_URL in .env
-python scripts/migrate_to_cloud.py --owner you@gmail.com            # shows what would be copied
-python scripts/migrate_to_cloud.py --owner you@gmail.com --apply    # copies records and uploads the files
+python scripts/create_user.py add keerthan --name "Keerthan"   # asks for the password
+python scripts/create_user.py list
+python scripts/create_user.py reset-password keerthan          # also signs them out everywhere
+python scripts/create_user.py disable keerthan                 # / enable
+python scripts/create_user.py claim-local keerthan             # give work made before sign-in to this account
 ```
 
-Use the email of the Google account you sign in with. Running it twice is safe.
+People change their own password from the account menu (top right). That
+signs them out of every other browser.
+
+## 6. Bring over your existing local work
+
+Everything made while sign-in was off belongs to the "local" workspace.
+
+- **Same database, now with sign-in on:** create your account, then run
+  `python scripts/create_user.py claim-local <username>`.
+- **Moving from the local SQLite file to Supabase:**
+  `python scripts/migrate_to_cloud.py --owner <username>` shows what would
+  move; add `--apply` to copy the records and upload the files.
 
 ## 7. Local development
 
-- **Without cloud** (no `.env`): `cd web && npm run dev` gives you no sign-in,
-  SQLite and local files, the same as before.
-- **Against your Supabase project:** copy `.env.example` to `.env` (API) and
-  `web/.env.example` to `web/.env.local` (web app), fill them in, then run
-  `cd web && npm run dev`. Sign-in redirects to `http://localhost:3000/auth/callback`,
-  which you added in step 2.5.
+- No `.env`: no sign-in, SQLite and local files. Run `cd web && npm run dev`.
+- With sign-in, locally: put `BIP_AUTH=password` in `.env` and restart. The
+  sign-in page appears; create your account, then `claim-local` your
+  existing work.
 
 ## How privacy works
 
-- The web app signs in with Supabase and sends the session token with every
-  API call. The API checks the token's signature: against Supabase's
-  published keys, or against `SUPABASE_JWT_SECRET` on older projects.
-- Every record is stored with its owner's email, and every read and write
+- Every API call carries the sign-in token. The API checks its signature and
+  that the account still exists, isn't switched off, and hasn't changed its
+  password since.
+- Every record is stored with its owner's username, and every read and write
   is limited to the signed-in person. Another person's record ids return
   "not found".
-- Uploaded files are kept in a private bucket under a folder per person. Only
-  the API, using the service key, can read them.
-- The database tables are in a private schema with row-level security on and
-  no public policies, so Supabase's public REST API can't reach them.
+- Repeated wrong passwords for a username, or from one address, are slowed
+  down: after 8 failures, wait 15 minutes. Unknown usernames and wrong
+  passwords give the same answer, so nobody can probe which accounts exist.
+- Uploaded files sit in a private bucket under a folder per person. Only the
+  API, using the service key, can read them.
+- The database tables are in a private schema with row-level security on
+  and no public policies, so Supabase's public REST API can't reach them.

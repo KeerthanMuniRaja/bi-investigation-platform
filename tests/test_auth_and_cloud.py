@@ -1,90 +1,140 @@
-"""Sign-in with Supabase (Google): tokens are checked, every person sees only
-their own work, the allow-list is enforced; older databases are upgraded;
+"""Username + password sign-in: accounts in the database, passwords hashed,
+tokens checked, every person sees only their own work, password changes
+end other sessions, guessing is throttled; older databases are upgraded;
 uploads go to cloud storage when it's configured."""
 from __future__ import annotations
 
 import sqlite3
-import time
-import uuid
 from pathlib import Path
 
 import httpx
-import jwt
 import pytest
 from fastapi.testclient import TestClient
 
-from app.auth import set_owner
+from app.auth import hash_password, set_owner, throttle, verify_password
 from app.errors import NotFoundError
 from app.store.blobs import SupabaseBlobs
 from app.store.database import SqliteDocumentDB, reset_store
 from tests.conftest import add_mock_connection
 
-SECRET = "test-jwt-secret-with-enough-length-for-hs256"
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 
 
-def token(email: str, *, expires_in: int = 3600, secret: str = SECRET) -> str:
-    claims = {"sub": str(uuid.uuid4()), "email": email, "aud": "authenticated", "role": "authenticated",
-              "exp": int(time.time()) + expires_in, "user_metadata": {"full_name": email.split("@")[0].title()}}
-    return jwt.encode(claims, secret, algorithm="HS256")
-
-
-def auth(email: str) -> dict:
-    return {"Authorization": f"Bearer {token(email)}"}
-
-
 @pytest.fixture()
-def signed_in_app(monkeypatch):
-    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+def client(monkeypatch, isolated_store):
+    monkeypatch.setenv("BIP_AUTH", "password")
+    monkeypatch.setenv("BIP_SECRET_KEY", "test-signing-key-that-is-long-enough-for-hs256")
+    throttle._fails.clear()
     from app.main import app
 
     return TestClient(app)
 
 
-def upload(client: TestClient, email: str, name: str = "tableau_sales_by_region.csv") -> dict:
+def signup(c: TestClient, username: str, password: str = "correct horse", **extra) -> dict:
+    r = c.post("/auth/signup", json={"username": username, "password": password, **extra})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def bearer(session: dict) -> dict:
+    return {"Authorization": f"Bearer {session['token']}"}
+
+
+def upload(c: TestClient, session: dict, name: str = "tableau_sales_by_region.csv") -> dict:
     with open(SAMPLES / name, "rb") as f:
-        r = client.post("/files", files={"files": (name, f, "text/csv")}, headers=auth(email))
+        r = c.post("/files", files={"files": (name, f, "text/csv")}, headers=bearer(session))
     assert r.status_code == 200, r.text
     return r.json()[0]
 
 
-def test_data_routes_need_a_valid_sign_in(signed_in_app):
-    c = signed_in_app
-    assert c.get("/health").status_code == 200                       # open
-    assert c.get("/api/info").json()["auth"] is True
-    assert c.get("/connections").status_code == 401                   # no token
-    assert c.get("/stats").status_code == 401
-    assert c.get("/connections", headers={"Authorization": "Bearer nonsense"}).status_code == 401
-    expired = c.get("/connections", headers={"Authorization": f"Bearer {token('a@x.com', expires_in=-60)}"})
-    assert expired.status_code == 401 and "expired" in expired.json()["detail"]
-    forged = c.get("/connections", headers={"Authorization": f"Bearer {token('a@x.com', secret='wrong-secret-of-similar-length-xx')}"})
-    assert forged.status_code == 401
-    ok = c.get("/me", headers=auth("Ann@Example.com"))
-    assert ok.status_code == 200 and ok.json()["email"] == "ann@example.com" and ok.json()["auth"] is True
+def test_passwords_are_hashed_never_stored():
+    stored = hash_password("correct horse")
+    assert "correct horse" not in stored and stored.startswith("scrypt$")
+    assert verify_password("correct horse", stored) and not verify_password("wrong horse", stored)
+    assert hash_password("correct horse") != stored          # salted
 
 
-def test_each_person_sees_only_their_own_work(signed_in_app):
-    c = signed_in_app
-    mine = upload(c, "ann@example.com")
-    assert [f["file_id"] for f in c.get("/files", headers=auth("ann@example.com")).json()] == [mine["file_id"]]
-    # someone else: nothing listed, and the id doesn't work either
-    assert c.get("/files", headers=auth("bob@example.com")).json() == []
-    assert c.get(f"/files/{mine['file_id']}/preview", headers=auth("bob@example.com")).status_code == 404
-    assert c.delete(f"/files/{mine['file_id']}", headers=auth("bob@example.com")).status_code == 404
-    assert c.get("/stats", headers=auth("bob@example.com")).json()["files"] == 0
-    # ...and Ann's file is untouched
-    assert c.get(f"/files/{mine['file_id']}/preview", headers=auth("ann@example.com")).status_code == 200
-    assert c.get("/stats", headers=auth("ann@example.com")).json()["files"] == 1
+def test_create_account_sign_in_and_use_the_app(client, isolated_store):
+    c = client
+    info = c.get("/api/info").json()
+    assert info["auth"] is True and info["signup"] is True
+    assert c.get("/connections").status_code == 401                     # data needs a sign-in
+    s = signup(c, "Keerthan", display_name="Keerthan M")
+    assert s["user"] == {"username": "keerthan", "name": "Keerthan M"}  # usernames are case-insensitive
+    row = isolated_store.db.get_user("keerthan")
+    assert row["password_hash"].startswith("scrypt$") and "correct horse" not in row["password_hash"]
+    assert c.get("/me", headers=bearer(s)).json() == {"auth": True, "username": "keerthan", "name": "Keerthan M"}
+    assert c.get("/connections", headers=bearer(s)).status_code == 200
+    # sign in again later
+    again = c.post("/auth/login", json={"username": "KEERTHAN", "password": "correct horse"})
+    assert again.status_code == 200 and c.get("/connections", headers=bearer(again.json())).status_code == 200
+
+
+def test_bad_sign_ins_are_refused(client):
+    c = client
+    signup(c, "ann")
+    assert c.post("/auth/signup", json={"username": "ann", "password": "another one"}).status_code == 409   # taken
+    assert c.post("/auth/signup", json={"username": "x", "password": "long enough"}).status_code == 400    # too short a name
+    assert c.post("/auth/signup", json={"username": "bob", "password": "short"}).status_code == 400        # weak password
+    wrong = c.post("/auth/login", json={"username": "ann", "password": "not it at all"})
+    nobody = c.post("/auth/login", json={"username": "ghost", "password": "not it at all"})
+    assert wrong.status_code == nobody.status_code == 401 and wrong.json() == nobody.json()   # no account probing
+    assert c.get("/connections", headers={"Authorization": "Bearer forged.token.here"}).status_code == 401
+
+
+def test_guessing_is_throttled(client):
+    c = client
+    signup(c, "ann")
+    for _ in range(8):
+        assert c.post("/auth/login", json={"username": "ann", "password": "guess guess"}).status_code == 401
+    blocked = c.post("/auth/login", json={"username": "ann", "password": "correct horse"})
+    assert blocked.status_code == 429 and "Try again" in blocked.json()["detail"]
+
+
+def test_each_person_sees_only_their_own_work(client):
+    c = client
+    ann, bob = signup(c, "ann"), signup(c, "bob")
+    mine = upload(c, ann)
+    assert [f["file_id"] for f in c.get("/files", headers=bearer(ann)).json()] == [mine["file_id"]]
+    assert c.get("/files", headers=bearer(bob)).json() == []
+    assert c.get(f"/files/{mine['file_id']}/preview", headers=bearer(bob)).status_code == 404
+    assert c.delete(f"/files/{mine['file_id']}", headers=bearer(bob)).status_code == 404
+    assert c.get("/stats", headers=bearer(bob)).json()["files"] == 0
+    assert c.get(f"/files/{mine['file_id']}/preview", headers=bearer(ann)).status_code == 200
+
+
+def test_changing_the_password_ends_other_sessions(client, isolated_store):
+    c = client
+    first = signup(c, "ann")
+    other = c.post("/auth/login", json={"username": "ann", "password": "correct horse"}).json()
+    assert c.post("/auth/password", json={"current_password": "nope nope", "new_password": "brand new pass"}, headers=bearer(first)).status_code == 400
+    r = c.post("/auth/password", json={"current_password": "correct horse", "new_password": "brand new pass"}, headers=bearer(first))
+    assert r.status_code == 200
+    assert c.get("/connections", headers=bearer(other)).status_code == 401       # old sessions are over
+    assert c.get("/connections", headers=bearer(r.json())).status_code == 200    # the new one works
+    assert c.post("/auth/login", json={"username": "ann", "password": "brand new pass"}).status_code == 200
+    # a switched-off account can't sign in, and its sessions stop working
+    isolated_store.db.update_user("ann", disabled=True, token_version=99)
+    assert c.post("/auth/login", json={"username": "ann", "password": "brand new pass"}).status_code == 403
+    assert c.get("/connections", headers=bearer(r.json())).status_code == 401
+
+
+def test_closed_sign_up_still_allows_the_first_account(client, monkeypatch):
+    monkeypatch.setenv("BIP_ALLOW_SIGNUP", "false")
+    c = client
+    assert c.get("/api/info").json()["signup"] is False
+    signup(c, "admin")                                                            # the very first account
+    closed = c.post("/auth/signup", json={"username": "someone", "password": "long enough"})
+    assert closed.status_code == 403
 
 
 def test_shared_caches_never_leak_another_persons_connection(isolated_store):
     store = isolated_store
-    reset = set_owner("ann@example.com")
+    reset = set_owner("ann")
     try:
         cid = add_mock_connection(store)       # also warms the shared connector cache
         assert store.connector(cid) is not None
-        set_owner("bob@example.com")
+        set_owner("bob")
         for call in (store.connector, store.graph_for, store.overview):
             with pytest.raises(NotFoundError):
                 call(cid)
@@ -95,21 +145,12 @@ def test_shared_caches_never_leak_another_persons_connection(isolated_store):
         del reset
 
 
-def test_allow_list_limits_who_can_sign_in(signed_in_app, monkeypatch):
-    monkeypatch.setenv("BIP_ALLOWED_DOMAINS", "jmangroup.com")
-    monkeypatch.setenv("BIP_ALLOWED_EMAILS", "friend@gmail.com")
-    c = signed_in_app
-    assert c.get("/connections", headers=auth("someone@jmangroup.com")).status_code == 200
-    assert c.get("/connections", headers=auth("friend@gmail.com")).status_code == 200
-    denied = c.get("/connections", headers=auth("stranger@gmail.com"))
-    assert denied.status_code == 403 and "isn't allowed" in denied.json()["detail"]
-
-
 def test_sign_in_off_keeps_the_single_local_workspace():
     from app.main import app
 
     c = TestClient(app)
-    assert c.get("/me").json() == {"auth": False, "email": None, "name": "Local workspace"}
+    assert c.get("/api/info").json()["auth"] is False
+    assert c.get("/me").json() == {"auth": False, "username": None, "name": "Local workspace"}
     assert c.get("/connections").status_code == 200
 
 
@@ -123,7 +164,8 @@ def test_databases_from_before_sign_in_are_upgraded(tmp_path):
     conn.close()
     db = SqliteDocumentDB(str(path))
     assert db.get("files", "local", "FILE0001") == "{}"          # kept, in the local workspace
-    assert db.get("files", "ann@example.com", "FILE0001") is None
+    assert db.get("files", "ann", "FILE0001") is None
+    assert db.count_users() == 0                                 # and it has an accounts table now
 
 
 # ------------------------------------------------------------ cloud storage
@@ -135,12 +177,14 @@ class FakeStorage:
         self.objects: dict[str, bytes] = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
+        import json
+
         assert request.headers["authorization"] == "Bearer service-key"
         path = request.url.path.removeprefix("/storage/v1")
         if request.method == "GET" and path.startswith("/bucket/"):
             return httpx.Response(200 if path.split("/")[2] in self.buckets else 404, json={})
         if request.method == "POST" and path == "/bucket":
-            self.buckets.add(__import__("json").loads(request.content)["id"])
+            self.buckets.add(json.loads(request.content)["id"])
             return httpx.Response(200, json={})
         if path.startswith("/object/"):
             key = path.removeprefix("/object/")
@@ -150,29 +194,28 @@ class FakeStorage:
             if request.method == "GET":
                 return httpx.Response(200, content=self.objects[key]) if key in self.objects else httpx.Response(404)
             if request.method == "DELETE":
-                for k in __import__("json").loads(request.content)["prefixes"]:
+                for k in json.loads(request.content)["prefixes"]:
                     self.objects.pop(f"{key}/{k}", None)
                 return httpx.Response(200, json=[])
         return httpx.Response(400)
 
 
-def test_uploads_are_kept_in_cloud_storage_and_fetched_back(tmp_path, monkeypatch):
+def test_uploads_are_kept_in_cloud_storage_and_fetched_back(tmp_path):
     fake = FakeStorage()
     blobs = SupabaseBlobs("https://example.supabase.co", "service-key", "bip-files", client=httpx.Client(transport=httpx.MockTransport(fake.handler)))
     store = reset_store(str(tmp_path / "data"))
     store.blobs = blobs
     from app.services import recon_service
 
-    reset = set_owner("ann@example.com")
+    reset = set_owner("ann")
     try:
         with open(SAMPLES / "tableau_sales_by_region.csv", "rb") as f:
             record = recon_service.save_upload(store, "tableau_sales_by_region.csv", f, "text/csv")
         assert "bip-files" in fake.buckets                               # private bucket created on first use
-        assert record.blob_key == f"ann_example.com/{record.stored_as}"
+        assert record.blob_key == f"ann/{record.stored_as}"
         assert fake.objects[f"bip-files/{record.blob_key}"] == (SAMPLES / "tableau_sales_by_region.csv").read_bytes()
         # a fresh server (empty disk) downloads it on first use
-        local = store.upload_dir / record.stored_as
-        local.unlink()
+        (store.upload_dir / record.stored_as).unlink()
         _, path = store.resolve_file(record.file_id)
         assert path.read_bytes() == (SAMPLES / "tableau_sales_by_region.csv").read_bytes()
         # deleting the file removes the cloud copy too

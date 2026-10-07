@@ -25,8 +25,8 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from app.api import connections, datasets, exports, files, investigations, model_files, recon, reconciliations, semantic, snapshots
-from app.auth import User, auth_enabled, require_user
+from app.api import account, connections, datasets, exports, files, investigations, model_files, recon, reconciliations, semantic, snapshots
+from app.auth import User, auth_enabled, require_user, signup_allowed
 from app.connectors.base import CapabilityError, ConnectorError
 from app.errors import NotFoundError
 from app.sources.files import FileReadError
@@ -104,19 +104,22 @@ async def _bad_input(_: Request, exc: ValueError) -> JSONResponse:
 # only ever sees that user's own records
 for module in (model_files, connections, semantic, files, datasets, recon, snapshots, reconciliations, investigations, exports):
     app.include_router(module.router, dependencies=[Depends(require_user)])
+app.include_router(account.router)  # sign-in itself is open
 
 
 @app.get("/me", tags=["meta"])
 def me(user: Optional[User] = Depends(require_user)) -> dict:
     """Who is signed in (the web app shows it; also a cheap "is my token ok" check)."""
     if user is None:
-        return {"auth": False, "email": None, "name": "Local workspace"}
-    return {"auth": True, "email": user.email, "name": user.name}
+        return {"auth": False, "username": None, "name": "Local workspace"}
+    return {"auth": True, "username": user.username, "name": user.name or user.username}
 
 
 @app.get("/api/info", tags=["meta"])
 def info() -> dict:
-    return {"product": "BI Investigation & Trust Platform", "version": app.version, "docs": "/docs", "auth": auth_enabled()}
+    # the web app reads this first: show the sign-in screen or not, offer "Create account" or not
+    return {"product": "BI Investigation & Trust Platform", "version": app.version, "docs": "/docs",
+            "auth": auth_enabled(), "signup": auth_enabled() and signup_allowed()}
 
 
 @app.get("/health", tags=["meta"])

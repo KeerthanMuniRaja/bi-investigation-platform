@@ -3,8 +3,9 @@ Persistence: a small document store, in SQLite (local) or Postgres (cloud).
 
 Every object is stored as a JSON document keyed by (collection, id) — the
 pydantic models *are* the schema, so no route or engine code touches SQL.
-Each document also has an owner: the signed-in person's email (see
-app/auth.py), or "local" when sign-in is off. Every read and write is
+Each document also has an owner: the signed-in person's username (see
+app/auth.py), or "local" when sign-in is off. Accounts themselves are in a
+separate `users` table (username, display name, password hash). Every read and write is
 scoped to the current owner, so people only ever see their own work.
 
   DATABASE_URL set    -> Postgres (e.g. Supabase), tables in the "bip" schema
@@ -69,6 +70,20 @@ class DocumentDB(Protocol):
     def count(self, collection: str, owner: str) -> int: ...
     def update(self, collection: str, owner: str, doc_id: str, change: Callable[[str], str]) -> Optional[str]: ...
     def next_counter(self, prefix: str) -> int: ...
+    # accounts (username + password sign-in); not owner-scoped
+    def get_user(self, username: str) -> Optional[dict]: ...
+    def create_user(self, user: dict) -> None: ...
+    def update_user(self, username: str, **fields) -> None: ...
+    def count_users(self) -> int: ...
+    def list_users(self) -> list[dict]: ...
+    def reassign_owner(self, old: str, new: str) -> int: ...
+
+
+USER_FIELDS = ("id", "username", "display_name", "password_hash", "created_at", "last_login_at", "token_version", "disabled")
+
+
+class UsernameTaken(ValueError):
+    pass
 
 
 class SqliteDocumentDB:
@@ -90,7 +105,55 @@ class SqliteDocumentDB:
                 self._conn.execute("ALTER TABLE documents ADD COLUMN owner TEXT NOT NULL DEFAULT 'local'")
             self._conn.execute("CREATE INDEX IF NOT EXISTS documents_owner ON documents (collection, owner)")
             self._conn.execute("CREATE TABLE IF NOT EXISTS counters (prefix TEXT PRIMARY KEY, value INTEGER NOT NULL)")
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT, "
+                "password_hash TEXT NOT NULL, created_at TEXT NOT NULL, last_login_at TEXT, "
+                "token_version INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0)"
+            )
             self._conn.commit()
+
+    # ------------------------------------------------------------ accounts
+    def get_user(self, username: str) -> Optional[dict]:
+        with self._lock:
+            row = self._conn.execute(f"SELECT {', '.join(USER_FIELDS)} FROM users WHERE username = ?", (username,)).fetchone()
+        if not row:
+            return None
+        user = dict(zip(USER_FIELDS, row))
+        user["disabled"] = bool(user["disabled"])
+        return user
+
+    def create_user(self, user: dict) -> None:
+        with self._lock:
+            try:
+                self._conn.execute(f"INSERT INTO users ({', '.join(USER_FIELDS)}) VALUES ({', '.join('?' * len(USER_FIELDS))})",
+                                   tuple(int(user[f]) if f == "disabled" else user.get(f) for f in USER_FIELDS))
+                self._conn.commit()
+            except sqlite3.IntegrityError as e:
+                raise UsernameTaken(user["username"]) from e
+
+    def update_user(self, username: str, **fields) -> None:
+        cols = [f for f in fields if f in USER_FIELDS and f not in ("id", "username")]
+        if not cols:
+            return
+        with self._lock:
+            self._conn.execute(f"UPDATE users SET {', '.join(f'{c} = ?' for c in cols)} WHERE username = ?",
+                               (*(int(fields[c]) if c == "disabled" else fields[c] for c in cols), username))
+            self._conn.commit()
+
+    def count_users(self) -> int:
+        with self._lock:
+            return self._conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+    def list_users(self) -> list[dict]:
+        with self._lock:
+            names = [r[0] for r in self._conn.execute("SELECT username FROM users ORDER BY username")]
+        return [self.get_user(n) for n in names]
+
+    def reassign_owner(self, old: str, new: str) -> int:
+        with self._lock:
+            cur = self._conn.execute("UPDATE documents SET owner = ? WHERE owner = ?", (new, old))
+            self._conn.commit()
+        return cur.rowcount
 
     def put(self, collection: str, owner: str, doc_id: str, data: str) -> None:
         with self._lock:
@@ -159,10 +222,21 @@ create table if not exists bip.documents (
 );
 create index if not exists documents_owner_idx on bip.documents (collection, owner, created_at desc, seq desc);
 create table if not exists bip.counters (prefix text primary key, value bigint not null);
+create table if not exists bip.users (
+    id            text primary key,
+    username      text not null unique,
+    display_name  text,
+    password_hash text not null,
+    created_at    timestamptz not null default now(),
+    last_login_at timestamptz,
+    token_version integer not null default 0,
+    disabled      boolean not null default false
+);
 -- only the API (connecting as the database owner) reads these tables: no
 -- row-level policies means nothing is reachable through Supabase's public APIs
 alter table bip.documents enable row level security;
 alter table bip.counters enable row level security;
+alter table bip.users enable row level security;
 revoke all on schema bip from public;
 do $$ begin
   if exists (select 1 from pg_roles where rolname = 'anon') then execute 'revoke all on schema bip from anon'; end if;
@@ -186,6 +260,49 @@ class PostgresDocumentDB:
 
     def close(self) -> None:
         self.pool.close()
+
+    # ------------------------------------------------------------ accounts
+    def get_user(self, username: str) -> Optional[dict]:
+        with self.pool.connection() as conn:
+            row = conn.execute(f"select {', '.join(USER_FIELDS)} from bip.users where username = %s", (username,)).fetchone()
+        if not row:
+            return None
+        user = dict(zip(USER_FIELDS, row))
+        for f in ("created_at", "last_login_at"):
+            if user[f] is not None and not isinstance(user[f], str):
+                user[f] = user[f].isoformat()
+        return user
+
+    def create_user(self, user: dict) -> None:
+        from psycopg.errors import UniqueViolation
+
+        try:
+            with self.pool.connection() as conn:
+                conn.execute(f"insert into bip.users ({', '.join(USER_FIELDS)}) values ({', '.join(['%s'] * len(USER_FIELDS))})",
+                             tuple(user.get(f) for f in USER_FIELDS))
+        except UniqueViolation as e:
+            raise UsernameTaken(user["username"]) from e
+
+    def update_user(self, username: str, **fields) -> None:
+        cols = [f for f in fields if f in USER_FIELDS and f not in ("id", "username")]
+        if not cols:
+            return
+        with self.pool.connection() as conn:
+            conn.execute(f"update bip.users set {', '.join(f'{c} = %s' for c in cols)} where username = %s",
+                         (*(fields[c] for c in cols), username))
+
+    def count_users(self) -> int:
+        with self.pool.connection() as conn:
+            return conn.execute("select count(*) from bip.users").fetchone()[0]
+
+    def list_users(self) -> list[dict]:
+        with self.pool.connection() as conn:
+            names = [r[0] for r in conn.execute("select username from bip.users order by username")]
+        return [self.get_user(n) for n in names]
+
+    def reassign_owner(self, old: str, new: str) -> int:
+        with self.pool.connection() as conn:
+            return conn.execute("update bip.documents set owner = %s where owner = %s", (new, old)).rowcount
 
     def put(self, collection: str, owner: str, doc_id: str, data: str) -> None:
         with self.pool.connection() as conn:

@@ -236,20 +236,9 @@
   background: var(--accent-weak); padding: 4px 10px 4px 6px; border-radius: 999px; }
 .si-wave { display: inline-block; transform-origin: 70% 70%; animation: si-wave 2.4s ease-in-out 1s infinite; }
 @keyframes si-wave { 0%, 60%, 100% { transform: rotate(0); } 10%, 30% { transform: rotate(16deg); } 20% { transform: rotate(-8deg); } 40% { transform: rotate(-4deg); } 50% { transform: rotate(10deg); } }
-.si-google { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; padding: 13px 16px;
-  border-radius: 13px; cursor: pointer; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); font: inherit; font-weight: 600;
-  font-size: 15px; box-shadow: 0 1px 2px rgba(15, 23, 42, .06); transition: border-color .2s, box-shadow .2s; }
-.si-google:hover { border-color: var(--accent); box-shadow: 0 10px 26px -8px color-mix(in srgb, var(--accent) 45%, transparent); }
-.si-google:disabled { opacity: .75; cursor: progress; }
-.si-google-shine { position: absolute; inset: 0; background: linear-gradient(105deg, transparent 35%, color-mix(in srgb, var(--accent) 16%, transparent) 50%, transparent 65%);
+.af-shine { position: absolute; inset: 0; background: linear-gradient(105deg, transparent 35%, color-mix(in srgb, var(--accent) 16%, transparent) 50%, transparent 65%);
   transform: translateX(-120%); }
-.si-google:hover .si-google-shine { animation: si-shine .9s ease; }
 @keyframes si-shine { to { transform: translateX(120%); } }
-.si-divider { display: flex; align-items: center; gap: 10px; font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); margin-top: 6px; }
-.si-divider::before, .si-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
-.si-perks { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
-.si-perks li { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--muted); }
-.si-perks svg { flex: none; color: var(--accent); }
 .si-denied-ico { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; background: var(--bad-weak); color: var(--bad); margin-top: 8px; }
 .si-denied-ico svg { width: 22px; height: 22px; }
 .si-card .btn { justify-self: start; }
@@ -279,3 +268,45 @@
 .user-item:hover { background: var(--surface-2); }
 .user-item svg { width: 15px; height: 15px; color: var(--muted); }
 .local-chip { font-size: 12px; color: var(--muted); padding: 4px 10px; border: 1px dashed var(--border-strong); border-radius: 999px; white-space: nowrap; }
+
+/* ------------------------------------------------- username + password form */
+.af-tabs { position: relative; display: grid; grid-template-columns: 1fr 1fr; padding: 4px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); }
+.af-tabs button { position: relative; isolation: isolate; border: 0; background: none; padding: 8px 10px; border-radius: 9px; font: inherit; font-size: 13.5px;
+  font-weight: 600; color: var(--muted); cursor: pointer; transition: color .15s; }
+.af-tabs button.on { color: var(--text); }
+.af-tab-pill { position: absolute; inset: 0; z-index: -1; border-radius: 9px; background: var(--surface); box-shadow: 0 1px 3px rgba(15, 23, 42, .12), 0 0 0 1px var(--border); }
+.af-field { display: grid; gap: 6px; }
+.af-label { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.af-input { position: relative; display: flex; align-items: center; gap: 10px; padding: 0 12px; height: 46px; border-radius: 12px; border: 1px solid var(--border-strong);
+  background: var(--surface); transition: border-color .15s, box-shadow .15s; }
+.af-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent); }
+.af-input > svg { flex: none; width: 17px; height: 17px; color: var(--faint); transition: color .15s; }
+.af-input:focus-within > svg { color: var(--accent); }
+.af-input input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 14.5px; padding: 0; box-shadow: none; }
+.af-input input::placeholder { color: var(--faint); }
+.af-eye { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 8px; background: none; color: var(--faint); cursor: pointer; }
+.af-eye:hover { color: var(--text); background: var(--surface-2); }
+.af-eye svg { width: 17px; height: 17px; }
+.af-match { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: #fff; }
+.af-match.ok { background: var(--ok); }
+.af-match.no { background: var(--bad); }
+.af-caps { font-size: 12px; font-weight: 600; color: var(--warn); }
+.af-meter { display: flex; align-items: center; gap: 10px; }
+.af-bar { flex: 1; height: 5px; border-radius: 5px; background: var(--surface-3); overflow: hidden; }
+.af-bar span { display: block; height: 100%; border-radius: 5px; background: var(--bad); }
+.af-bar span.s2 { background: var(--warn); }
+.af-bar span.s3 { background: #22a06b; }
+.af-bar span.s4 { background: var(--ok); }
+.af-meter-text { font-size: 12px; color: var(--muted); min-width: 56px; text-align: right; }
+.af-submit { position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 48px; margin-top: 4px;
+  border: 0; border-radius: 12px; cursor: pointer; font: inherit; font-weight: 650; font-size: 15px; color: #fff;
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #8b5cf6));
+  box-shadow: 0 10px 24px -10px color-mix(in srgb, var(--accent) 70%, transparent); }
+.af-submit:hover .af-shine { animation: si-shine .9s ease; }
+.af-submit .af-shine { background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, .28) 50%, transparent 65%); }
+.af-submit:disabled { opacity: .8; cursor: progress; }
+.af-submit svg { width: 17px; height: 17px; }
+.af-foot { margin: 2px 0 0; text-align: center; font-size: 13px; color: var(--muted); }
+.af-foot button { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--accent); cursor: pointer; }
+.af-foot button:hover { text-decoration: underline; }
+.si-card form.si-card-body { gap: 14px; }

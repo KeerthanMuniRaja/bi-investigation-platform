@@ -13,7 +13,7 @@ import { pageMeasureIds } from "@/lib/overview";
 import type { ModelFile, Overview } from "@/lib/types";
 import { toast, useConfirm } from "@/components/feedback";
 import { I, Icon, Spinner } from "@/components/ui";
-import { authEnabled } from "@/lib/supabase";
+import { useAuth } from "@/components/auth/AuthProvider";
 
 const TOOLS = [
   { href: href.reconcile, label: "Reconcile", icon: I.reconcile },
@@ -36,6 +36,7 @@ export function Sidebar() {
   const fileRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const pathname = usePathname();
+  const signedIn = useAuth().state.status === "signed-in";
 
   async function onUpload(file: File) {
     setUploading(file.name);
@@ -109,7 +110,7 @@ export function Sidebar() {
           })}
         </nav>
       </LayoutGroup>
-      <div className="sidebar-foot"><span className="dot" />{authEnabled ? "Private to your account" : "Runs locally · nothing leaves this machine"}</div>
+      <div className="sidebar-foot"><span className="dot" />{signedIn ? "Private to your account" : "Runs locally · nothing leaves this machine"}</div>
     </aside>
   );
 }

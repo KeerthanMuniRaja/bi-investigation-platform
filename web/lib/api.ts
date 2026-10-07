@@ -5,7 +5,7 @@
 "use client";
 
 import useSWR, { mutate as globalMutate, type SWRConfiguration } from "swr";
-import { accessToken, reportAuthProblem } from "./supabase";
+import { accessToken, reportSessionEnded } from "./session";
 import type { FileRecord } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
@@ -37,12 +37,22 @@ export async function authHeaders(): Promise<Record<string, string>> {
 }
 
 function checkAuth(res: Response, message: string) {
-  if (res.status === 401) reportAuthProblem({ kind: "expired", message });
-  else if (res.status === 403 && /isn't allowed/i.test(message)) reportAuthProblem({ kind: "denied", message });
+  if (res.status === 401) reportSessionEnded(message);
 }
 
+/** an API call with the signed-in user's token (waits until requests may go) */
 export async function api<T = unknown>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const init: RequestInit = { method, signal, headers: await authHeaders() };
+  return request<T>(method, path, body, signal, await authHeaders(), true);
+}
+
+/** sign-in's own calls (/api/info, /auth/login, ...): go straight away, with the token given */
+export function openApi<T = unknown>(method: string, path: string, body?: unknown, token?: string | null): Promise<T> {
+  return request<T>(method, path, body, undefined, token ? { Authorization: `Bearer ${token}` } : {}, false);
+}
+
+async function request<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined,
+  headers: Record<string, string>, watchSession: boolean): Promise<T> {
+  const init: RequestInit = { method, signal, headers };
   if (body instanceof FormData) init.body = body;
   else if (body !== undefined) {
     (init.headers as Record<string, string>)["Content-Type"] = "application/json";
@@ -60,7 +70,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
     const message = detailOf(data, res);
-    checkAuth(res, message);
+    if (watchSession) checkAuth(res, message);
     throw new ApiError(message, res.status);
   }
   return data as T;

@@ -107,24 +107,24 @@ test runs against its own temporary data folder.
 
 ## Deploying
 
-Hosted, people **sign in with Google** and each person sees only their own
-dashboards, files, results and investigations:
+Hosted, people **sign in with a username and password** (accounts are kept
+in the app's database, passwords stored only as salted hashes) and each
+person sees only their own dashboards, files, results and investigations:
 
 - **Web app (`web/`)** on Vercel (Root Directory `web`).
 - **API (`app/`)** on any Docker host (Render, Railway, Fly.io, Azure,
   Cloud Run), using the repo's `Dockerfile`. It can't run on Vercel: it reads
   uploads of hundreds of MB, and reading a model can take minutes.
-- **Supabase** for Google sign-in (Auth), the records (Postgres) and the
-  uploaded files (Storage). Tables and the storage bucket are created
-  automatically.
+- **Supabase** (optional) for the records and accounts (Postgres) and the
+  uploaded files (Storage). Tables and the bucket are created automatically.
 
-Step-by-step setup, every setting and where it goes:
-**[docs/DEPLOY.md](docs/DEPLOY.md)**. Example settings: `.env.example` (API)
-and `web/.env.example` (web app). To move your existing local work into
-your account: `python scripts/migrate_to_cloud.py --owner you@gmail.com`.
+Step-by-step setup and every setting: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
+Example settings: `.env.example`. Manage accounts with
+`python scripts/create_user.py` (`add`, `list`, `reset-password`, `disable`,
+`claim-local`).
 
-Without those settings the app runs exactly as before: no sign-in, SQLite
-and local files. Use that for local development; the tests always run this way.
+Without `BIP_AUTH=password` the app runs exactly as before: no sign-in, one
+local workspace. Use that for local development; the tests always run this way.
 
 ## Architecture
 
@@ -153,7 +153,7 @@ app/
   services/      recon_service.py: orchestration (upload, materialize datasets, run, templates)
   store/         database.py: document store in SQLite (local) or Postgres (cloud), scoped to
                  the signed-in owner; blobs.py: uploaded files in Supabase Storage
-  auth.py        Google sign-in via Supabase: checks the token on every request
+  auth.py        username + password sign-in: password hashing, tokens, the check on every request
   api/           FastAPI routers (connections, semantic/lineage, files, datasets, recon,
                  templates, snapshots, investigations, exports)
   static/        handoff.html: the API's root page, which sends people to the web app
@@ -262,8 +262,8 @@ environment variables.
 
 1. **Scheduling and alerts.** Run templates on a schedule (e.g. after each
    dataset refresh) and notify on new differences.
-2. **Teams and roles.** Sign-in is per person today (each Google account
-   has a private workspace). Shared team workspaces and read-only roles
+2. **Teams and roles.** Sign-in is per person today (each account has a
+   private workspace). Shared team workspaces and read-only roles
    would come next.
 3. **More connectors.** Qlik Sense (Engine API), Looker and Power BI
    Report Server. Until then, the exported-files connection covers them.
