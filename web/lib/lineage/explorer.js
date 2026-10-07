@@ -940,8 +940,10 @@ export class LineageExplorer {
     const dax = p.dax_expression || p.expression;
     const kv = [["Type", t.label], ["ID", n.id], ["In", n.parent_id], ["Page", p.page_name], ["Visual type", p.visual_type], ["Data type", p.data_type],
       ["Table kind", p.kind], ["Loads from", p.source_ref], ["Folder", p.display_folder]].filter(([, v]) => v);
-    const modelLink = n.type === "MEASURE" ? `#/models/${encodeURIComponent(this.cid)}?tab=measures&m=${encodeURIComponent(n.id)}`
-      : n.type === "TABLE" || n.type === "COLUMN" ? `#/models/${encodeURIComponent(this.cid)}?tab=tables` : n.type === "VISUAL" ? `#/models/${encodeURIComponent(this.cid)}?tab=report` : "";
+    // the app's model views; the raw ids here are swapped for readable names when the page opens
+    const model = `/dashboards/${encodeURIComponent(this.cid)}/model`;
+    const modelLink = n.type === "MEASURE" ? `${model}/measures/${encodeURIComponent(n.id)}`
+      : n.type === "TABLE" || n.type === "COLUMN" ? `${model}/tables` : n.type === "VISUAL" ? `${model}/report-map` : "";
     this.drawer.innerHTML = `
       <header><div class="ico" style="background:${t.color}">${esc(t.glyph)}</div>
         <div style="flex:1;min-width:0"><div class="small" style="color:${t.color};font-weight:700;letter-spacing:.05em">${esc(t.label.toUpperCase())}${id === this.rootId ? " · FOCUS" : ""}</div><h3>${esc(n.name)}</h3></div>

@@ -45,7 +45,7 @@
       <pre>cd web
 npm run dev</pre>
       <p><span class="spin"></span>This page opens the app as soon as it's up.</p>
-      <div class="links"><a href="/docs">API docs</a><a id="legacy" href="/legacy">Previous interface</a></div>
+      <div class="links"><a href="/docs">API docs</a></div>
     </section>
   </main>
   <script>
@@ -70,7 +70,6 @@ npm run dev</pre>
     const url = WEB + target();
     document.getElementById("dest").textContent = document.getElementById("dest").href = url;
     document.getElementById("web").textContent = document.getElementById("web").href = WEB;
-    document.getElementById("legacy").href = "/legacy" + location.hash;
 
     async function up() {
       const ctl = new AbortController();

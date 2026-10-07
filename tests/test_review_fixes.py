@@ -255,9 +255,9 @@ def test_neighborhood_levels_counts_and_expansion(client):
     assert client.get(f"/connections/{pb['id']}/lineage-graph", params={"node_id": "stock_value_table", "up": 99}).status_code == 422
 
 
-def test_root_hands_over_to_the_web_app_and_keeps_the_previous_interface():
+def test_root_hands_over_to_the_web_app():
     """http://localhost:8000/#/reconcile must open the Next.js app at its
-    readable address; the previous hash-routed interface lives at /legacy."""
+    readable address; the first, hash-routed interface is gone."""
     from app.main import app
 
     client = TestClient(app)
@@ -265,5 +265,5 @@ def test_root_hands_over_to_the_web_app_and_keeps_the_previous_interface():
     assert page.status_code == 200 and "text/html" in page.headers["content-type"]
     assert 'const WEB = "http://localhost:3000";' in page.text and "__WEB_URL__" not in page.text
     assert "location.replace(url)" in page.text
-    legacy = client.get("/legacy")
-    assert legacy.status_code == 200 and "/static/app.js" in legacy.text
+    assert client.get("/legacy").status_code == 404
+    assert client.get("/static/app.js").status_code == 404

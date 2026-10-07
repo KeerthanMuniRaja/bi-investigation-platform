@@ -64,9 +64,7 @@ browser calls from `localhost:3000`; add other origins with
 Opening the API address `http://localhost:8000/` takes you to the app,
 and old `#/…` links (`http://localhost:8000/#/reconcile`) open the same
 place there (`http://localhost:3000/reconcile`). If the app isn't running,
-that page says how to start it. Point it elsewhere with `BIP_WEB_URL`. The
-previous plain-JS interface is still available at
-`http://localhost:8000/legacy`.
+that page says how to start it. Point it elsewhere with `BIP_WEB_URL`.
 
 **Dashboard workspace (home screen).** The left sidebar lists every
 uploaded dashboard (**+** uploads a new `.pbix`); open one to see its
@@ -158,7 +156,7 @@ app/
   auth.py        Google sign-in via Supabase: checks the token on every request
   api/           FastAPI routers (connections, semantic/lineage, files, datasets, recon,
                  templates, snapshots, investigations, exports)
-  static/        The previous web app (plain HTML/CSS/JS), still served at :8000
+  static/        handoff.html: the API's root page, which sends people to the web app
 web/             The frontend: Next.js (App Router) + React + TypeScript + Motion
   app/           routes (the folder tree is the URL scheme, see "Addresses" below)
   components/    shell (sidebars, breadcrumbs), workspace, model views, lineage, recon
@@ -264,13 +262,12 @@ environment variables.
 
 1. **Scheduling and alerts.** Run templates on a schedule (e.g. after each
    dataset refresh) and notify on new differences.
-2. **Authentication and roles.** The API currently has no login. Put it
-   behind your SSO or reverse proxy before sharing it on a network.
+2. **Teams and roles.** Sign-in is per person today (each Google account
+   has a private workspace). Shared team workspaces and read-only roles
+   would come next.
 3. **More connectors.** Qlik Sense (Engine API), Looker and Power BI
    Report Server. Until then, the exported-files connection covers them.
 4. **Dev vs Prod model comparison** (spec §19–20): diff two PBIP/TMDL
    versions of the same model.
 5. **AI-assisted explanations** (§43–44) layered on top of the
    deterministic evidence, never replacing it.
-6. **Postgres** in place of SQLite for multi-user deployments. Only
-   `store/database.py` needs to change.

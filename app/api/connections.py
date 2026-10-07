@@ -235,19 +235,3 @@ def preview_visual_data(connection_id: str, req: VisualDataRequest, store: Store
     result = store.connector(connection_id).get_visual_data(req.report_id, req.page_id, req.visual_id, req.filters)
     columns, rows = rows_from_query_result(result)
     return {"columns": columns, "rows": rows[: req.limit], "row_count": len(rows), "warnings": result.warnings}
-
-
-# ------------------------------------------------ legacy query-param routes
-@router.get("/reports", response_model=list[Report], tags=["reports"])
-def list_reports(connection_id: str, workspace_id: str, store: Store = Depends(get_store)) -> list[Report]:
-    return store.connector(connection_id).get_reports(workspace_id)
-
-
-@router.get("/reports/{report_id}/pages", response_model=list[Page], tags=["reports"])
-def list_pages(report_id: str, connection_id: str, store: Store = Depends(get_store)) -> list[Page]:
-    return store.connector(connection_id).get_pages(report_id)
-
-
-@router.get("/reports/{report_id}/visuals", response_model=list[Visual], tags=["reports"])
-def list_visuals(report_id: str, page_id: str, connection_id: str, store: Store = Depends(get_store)) -> list[Visual]:
-    return store.connector(connection_id).get_visuals(report_id, page_id)

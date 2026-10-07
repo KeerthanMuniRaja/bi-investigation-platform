@@ -23,8 +23,7 @@ except ImportError:  # pragma: no cover
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.api import connections, datasets, exports, files, investigations, model_files, recon, reconciliations, semantic, snapshots
 from app.auth import User, auth_enabled, require_user
@@ -152,19 +151,11 @@ def stats(store: Store = Depends(get_store)) -> dict:
 
 # ------------------------------------------------------------------ web app
 # The app people use is the Next.js frontend (web/), with readable URLs.
-# This server's root only hands over to it, translating the previous
-# interface's "#/..." addresses; the previous interface stays at /legacy.
+# This server's root only hands over to it (also translating old "#/..."
+# links from the first version of the app).
 WEB_URL = os.environ.get("BIP_WEB_URL", "http://localhost:3000").rstrip("/")
-
-if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/", include_in_schema=False)
 def web_app() -> HTMLResponse:
     return HTMLResponse((STATIC_DIR / "handoff.html").read_text(encoding="utf-8").replace("__WEB_URL__", json.dumps(WEB_URL)))
-
-
-@app.get("/legacy", include_in_schema=False)
-def legacy_web_app() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
