@@ -11,7 +11,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { mutate } from "swr";
 import type { Session } from "@supabase/supabase-js";
-import { AUTH_EVENT, authEnabled, setSignedIn, supabase, type AuthProblem } from "@/lib/supabase";
+import { AUTH_EVENT, authEnabled, googleEnabled, setSignedIn, supabase, type AuthProblem } from "@/lib/supabase";
 import { Denied, SignIn } from "./SignIn";
 
 export type Account = { email: string; name: string };
@@ -96,6 +96,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const here = window.location.pathname + window.location.search;
       sessionStorage.setItem(NEXT_KEY, here.startsWith(CALLBACK) ? "/" : here);
     } catch { /* ignore */ }
+    // Supabase answers a disabled provider with a bare JSON error page: check first, explain here
+    if (!(await googleEnabled())) {
+      setState((s) => ({ ...s, status: "signed-out", message: "Google sign-in isn't switched on for this app yet. In Supabase, open Authentication → Sign In / Providers → Google, turn it on and add the Google client ID and secret." }));
+      return;
+    }
     const { error } = await sb.auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: `${window.location.origin}${CALLBACK}`, queryParams: { prompt: "select_account" } },

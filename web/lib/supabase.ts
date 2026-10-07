@@ -50,6 +50,19 @@ export async function accessToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
+/** is Google switched on in the Supabase project? (unknown -> true: let Supabase answer) */
+export async function googleEnabled(): Promise<boolean> {
+  if (!authEnabled) return false;
+  try {
+    const r = await fetch(`${URL_}/auth/v1/settings`, { headers: { apikey: KEY! } });
+    if (!r.ok) return true;
+    const settings = (await r.json()) as { external?: Record<string, boolean> };
+    return settings.external?.google !== false;
+  } catch {
+    return true;
+  }
+}
+
 /* The API answered 401 (session gone) or 403 (account not allowed): the
    auth provider listens and shows the right screen. */
 export type AuthProblem = { kind: "expired" | "denied"; message: string };
