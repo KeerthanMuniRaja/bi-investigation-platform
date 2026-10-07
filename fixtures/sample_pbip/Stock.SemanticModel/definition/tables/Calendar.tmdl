@@ -1,0 +1,17 @@
+table Calendar
+
+	column DateKey
+		dataType: dateTime
+		sourceColumn: DateKey
+
+	column Year
+		dataType: int64
+		sourceColumn: Year
+
+	column Month
+		dataType: string
+		sourceColumn: Month
+
+	partition Calendar = m
+		mode: import
+		source = Sql.Database("warehouse.example.com", "Inventory")

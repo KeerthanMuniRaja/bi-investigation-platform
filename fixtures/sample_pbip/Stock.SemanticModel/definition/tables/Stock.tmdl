@@ -1,0 +1,41 @@
+table Stock
+	lineageTag: 6a1c
+
+	measure 'Stock Value' = SUMX(Stock, Stock[Buying Price] * Stock[Quantity])
+		formatString: "£"#,0
+		lineageTag: 11aa
+
+	measure 'Average Buying Price' =
+			// weighted by quantity
+			DIVIDE(
+				[Stock Value],
+				SUM(Stock[Quantity])
+			)
+		formatString: 0.00
+
+	measure 'Stock Availability' = DIVIDE(COUNTROWS(FILTER(Stock, [Quantity] > 0)), COUNTROWS(Stock))
+
+	column Product
+		dataType: string
+		sourceColumn: Product
+
+	column 'Buying Price'
+		dataType: decimal
+		sourceColumn: BuyingPrice
+
+	column Quantity
+		dataType: int64
+		sourceColumn: Quantity
+
+	column DateKey
+		dataType: dateTime
+		sourceColumn: DateKey
+
+	partition Stock = m
+		mode: import
+		source =
+				let
+				    Source = Sql.Database("warehouse.example.com", "Inventory"),
+				    dbo_Stock = Source{[Schema="dbo",Item="Stock"]}[Data]
+				in
+				    dbo_Stock

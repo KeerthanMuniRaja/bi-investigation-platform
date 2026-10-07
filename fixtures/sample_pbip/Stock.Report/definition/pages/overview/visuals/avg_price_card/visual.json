@@ -1,0 +1,15 @@
+{
+  "name": "avg_price_card",
+  "visual": {
+    "visualType": "card",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {"field": {"Measure": {"Expression": {"SourceRef": {"Entity": "Stock"}}, "Property": "Average Buying Price"}}}
+          ]
+        }
+      }
+    }
+  }
+}

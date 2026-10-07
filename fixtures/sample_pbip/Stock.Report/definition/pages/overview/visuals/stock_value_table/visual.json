@@ -1,0 +1,20 @@
+{
+  "name": "stock_value_table",
+  "visual": {
+    "visualType": "tableEx",
+    "query": {
+      "queryState": {
+        "Values": {
+          "projections": [
+            {"field": {"Column": {"Expression": {"SourceRef": {"Entity": "Stock"}}, "Property": "Product"}}, "queryRef": "Stock.Product"},
+            {"field": {"Aggregation": {"Expression": {"Column": {"Expression": {"SourceRef": {"Entity": "Stock"}}, "Property": "Quantity"}}, "Function": 0}}, "queryRef": "Sum(Stock.Quantity)"},
+            {"field": {"Measure": {"Expression": {"SourceRef": {"Entity": "Stock"}}, "Property": "Stock Value"}}, "queryRef": "Stock.Stock Value"}
+          ]
+        }
+      }
+    },
+    "visualContainerObjects": {
+      "title": [{"properties": {"text": {"expr": {"Literal": {"Value": "'Stock Value by Product'"}}}}}]
+    }
+  }
+}

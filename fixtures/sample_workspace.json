@@ -1,0 +1,309 @@
+{
+  "workspaces": [
+    {
+      "id": "WS001",
+      "name": "FP&A Workspace"
+    }
+  ],
+  "reports": [
+    {
+      "id": "R001",
+      "name": "Stock Performance",
+      "workspace_id": "WS001",
+      "model_id": "MOD001"
+    }
+  ],
+  "pages": [
+    {
+      "id": "P001",
+      "report_id": "R001",
+      "name": "Overview"
+    }
+  ],
+  "visuals": [
+    {
+      "id": "V001",
+      "report_id": "R001",
+      "page_id": "P001",
+      "title": "Stock Value by Product",
+      "visual_type": "tableEx",
+      "measure_ids": [
+        "M_STOCKVALUE"
+      ],
+      "default_filters": [
+        {
+          "field": "Calendar[Month]",
+          "operator": "equals",
+          "values": [
+            "March"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "V002",
+      "report_id": "R001",
+      "page_id": "P001",
+      "title": "Average Buying Price",
+      "visual_type": "card",
+      "measure_ids": [
+        "M_AVGBUY"
+      ],
+      "default_filters": []
+    },
+    {
+      "id": "V003",
+      "report_id": "R001",
+      "page_id": "P001",
+      "title": "Stock Availability",
+      "visual_type": "gauge",
+      "measure_ids": [
+        "M_STOCKAVAIL"
+      ],
+      "default_filters": []
+    }
+  ],
+  "semantic_models": [
+    {
+      "id": "MOD001",
+      "name": "Stock Model",
+      "workspace_id": "WS001"
+    }
+  ],
+  "tables": [
+    {
+      "id": "T_STOCK",
+      "model_id": "MOD001",
+      "name": "Stock",
+      "source_ref": "sql://warehouse/dbo/stock"
+    },
+    {
+      "id": "T_CAL",
+      "model_id": "MOD001",
+      "name": "Calendar",
+      "source_ref": "sql://warehouse/dbo/calendar"
+    }
+  ],
+  "columns": [
+    {
+      "id": "C_BUYPRICE",
+      "table_id": "T_STOCK",
+      "name": "Buying Price",
+      "data_type": "currency"
+    },
+    {
+      "id": "C_QTY",
+      "table_id": "T_STOCK",
+      "name": "Quantity",
+      "data_type": "int"
+    },
+    {
+      "id": "C_DATEKEY",
+      "table_id": "T_STOCK",
+      "name": "DateKey",
+      "data_type": "date"
+    },
+    {
+      "id": "C_YEAR",
+      "table_id": "T_CAL",
+      "name": "Year",
+      "data_type": "int"
+    },
+    {
+      "id": "C_MONTH",
+      "table_id": "T_CAL",
+      "name": "Month",
+      "data_type": "string"
+    },
+    {
+      "id": "C_CALDATEKEY",
+      "table_id": "T_CAL",
+      "name": "DateKey",
+      "data_type": "date"
+    },
+    {
+      "id": "C_PRODUCT",
+      "table_id": "T_STOCK",
+      "name": "Product",
+      "data_type": "string"
+    }
+  ],
+  "relationships": [
+    {
+      "id": "REL001",
+      "model_id": "MOD001",
+      "from_table_id": "T_STOCK",
+      "from_column_id": "C_DATEKEY",
+      "to_table_id": "T_CAL",
+      "to_column_id": "C_CALDATEKEY",
+      "cross_filter_direction": "single"
+    }
+  ],
+  "measures": [
+    {
+      "id": "M_AVGBUY",
+      "model_id": "MOD001",
+      "name": "Average Buying Price",
+      "dax_expression": "AVERAGE(Stock[Buying Price])",
+      "table_id": "T_STOCK",
+      "depends_on_measure_ids": [],
+      "depends_on_column_ids": [
+        "C_BUYPRICE"
+      ]
+    },
+    {
+      "id": "M_STOCKVALUE",
+      "model_id": "MOD001",
+      "name": "Stock Value",
+      "dax_expression": "SUMX(Stock, Stock[Buying Price] * Stock[Quantity])",
+      "table_id": "T_STOCK",
+      "depends_on_measure_ids": [],
+      "depends_on_column_ids": [
+        "C_BUYPRICE",
+        "C_QTY"
+      ]
+    },
+    {
+      "id": "M_STOCKAVAIL",
+      "model_id": "MOD001",
+      "name": "Stock Availability",
+      "dax_expression": "DIVIDE(COUNTROWS(FILTER(Stock, Stock[Quantity] > 0)), COUNTROWS(Stock))",
+      "table_id": "T_STOCK",
+      "depends_on_measure_ids": [],
+      "depends_on_column_ids": [
+        "C_QTY"
+      ]
+    }
+  ],
+  "scripted_values": {
+    "M_STOCKVALUE": [
+      {
+        "match": {
+          "Calendar[Year]": "2025",
+          "Calendar[Month]": "March"
+        },
+        "value": 3615900.0
+      },
+      {
+        "match": {
+          "Calendar[Year]": "2026",
+          "Calendar[Month]": "March"
+        },
+        "value": 3644128.0
+      }
+    ]
+  },
+  "visual_data": {
+    "V001": {
+      "columns": [
+        "Stock[Product]",
+        "Calendar[Year]",
+        "Calendar[Month]",
+        "[Average Buying Price]",
+        "Stock[Quantity]",
+        "[Stock Value]"
+      ],
+      "rows": [
+        [
+          "Hydraulic Pump",
+          "2025",
+          "March",
+          12.5,
+          80000,
+          1000000.0
+        ],
+        [
+          "Subsea Cable",
+          "2025",
+          "March",
+          45.0,
+          20000,
+          900000.0
+        ],
+        [
+          "Valve Assembly",
+          "2025",
+          "March",
+          8.2,
+          100000,
+          820000.0
+        ],
+        [
+          "ROV Thruster",
+          "2025",
+          "March",
+          150.0,
+          4000,
+          600000.0
+        ],
+        [
+          "Sensor Kit",
+          "2025",
+          "March",
+          29.59,
+          10000,
+          295900.0
+        ],
+        [
+          "Hydraulic Pump",
+          "2026",
+          "March",
+          12.6,
+          78000,
+          982800.0
+        ],
+        [
+          "Subsea Cable",
+          "2026",
+          "March",
+          44.0,
+          21000,
+          924000.0
+        ],
+        [
+          "Valve Assembly",
+          "2026",
+          "March",
+          8.2,
+          100000,
+          820000.0
+        ],
+        [
+          "ROV Thruster",
+          "2026",
+          "March",
+          152.0,
+          4100,
+          623200.0
+        ],
+        [
+          "Sensor Kit",
+          "2026",
+          "March",
+          31.0,
+          9488,
+          294128.0
+        ]
+      ]
+    },
+    "V002": {
+      "columns": [
+        "Calendar[Year]",
+        "Calendar[Month]",
+        "[Average Buying Price]"
+      ],
+      "rows": [
+        [
+          "2025",
+          "March",
+          16.8967
+        ],
+        [
+          "2026",
+          "March",
+          17.1417
+        ]
+      ]
+    }
+  }
+}

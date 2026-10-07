@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BI Trust Platform</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232f5bea'/><path d='M9 21l5-6 4 4 6-8' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <!--
+    This server is the API. The app itself is the Next.js frontend (web/),
+    which uses readable addresses (/reconcile, /dashboards/sales-dashboard-4…)
+    instead of the previous interface's "#/…" ones. This page converts an
+    old "#/…" link and opens the same place in the app.
+  -->
+  <style>
+    :root { --bg: #f3f5f9; --card: #fff; --text: #0f172a; --muted: #5b6475; --border: #e2e7ef; --accent: #2f5bea; --code: #eef2f8; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #0a0f1a; --card: #111827; --text: #e5e9f0; --muted: #9aa4b5; --border: #263042; --accent: #6d8dff; --code: #1a2333; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text);
+      font: 15px/1.55 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; padding: 16px; }
+    .card { width: min(520px, 100%); background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 28px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, .08); }
+    .mark { width: 40px; height: 40px; border-radius: 11px; background: var(--accent); display: grid; place-items: center; margin-bottom: 14px; }
+    h1 { font-size: 19px; margin: 0 0 6px; }
+    p { margin: 0 0 12px; color: var(--muted); }
+    code { background: var(--code); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; font-size: 13px; }
+    pre { background: var(--code); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; font-size: 13px; overflow-x: auto; margin: 0 0 14px; }
+    a { color: var(--accent); font-weight: 600; text-decoration: none; }
+    .spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); display: inline-block;
+      vertical-align: -3px; margin-right: 8px; animation: s .8s linear infinite; }
+    @keyframes s { to { transform: rotate(360deg); } }
+    .links { display: flex; gap: 16px; flex-wrap: wrap; font-size: 14px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="mark"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l5-6 4 4 7-9"/></svg></div>
+    <section id="going">
+      <h1><span class="spin"></span>Opening the app…</h1>
+      <p>Taking you to <a id="dest" href="#"></a></p>
+    </section>
+    <section id="down" hidden>
+      <h1>The app isn't running yet</h1>
+      <p>This address is the API. The app runs at <a id="web" href="#"></a> — start it from the project folder with:</p>
+      <pre>cd web
+npm run dev</pre>
+      <p><span class="spin"></span>This page opens the app as soon as it's up.</p>
+      <div class="links"><a href="/docs">API docs</a><a id="legacy" href="/legacy">Previous interface</a></div>
+    </section>
+  </main>
+  <script>
+    const WEB = __WEB_URL__;
+    // previous "#/…" address -> the app's readable one. Ids left in (CONN0004, DREC0001)
+    // are swapped for names by the app once the page loads.
+    const MODEL_TAB = { overview: "", report: "/report-map", measures: "/measures", tables: "/tables", relationships: "/relationships", health: "/health-check" };
+    function target() {
+      const hash = location.hash.replace(/^#/, "");
+      const [raw, query = ""] = hash.split("?");
+      const path = raw.startsWith("/") ? raw : "/" + raw;
+      const q = new URLSearchParams(query);
+      const seg = path.split("/").filter(Boolean);
+      const enc = encodeURIComponent;
+      if (!seg.length || path === "/overview" || path === "/models") return "/";
+      if (seg[0] === "models") return `/dashboards/${seg[1]}/model${MODEL_TAB[q.get("tab") || "overview"] ?? ""}`;
+      if (seg[0] === "runs") return seg[1] ? `/results/${seg[1]}` : q.get("template") ? `/templates/${enc(q.get("template"))}` : "/results";
+      if (seg[0] === "lineage") return q.get("c") ? `/lineage/${enc(q.get("c"))}${q.get("n") ? `/objects/${enc(q.get("n"))}` : ""}` : "/lineage";
+      if (seg[0] === "investigations" && q.get("status")) return `/investigations?status=${q.get("status").toLowerCase().replace(/_/g, "-")}`;
+      return path + (query ? "?" + query : "");
+    }
+    const url = WEB + target();
+    document.getElementById("dest").textContent = document.getElementById("dest").href = url;
+    document.getElementById("web").textContent = document.getElementById("web").href = WEB;
+    document.getElementById("legacy").href = "/legacy" + location.hash;
+
+    async function up() {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 2500);
+      try { await fetch(WEB + "/", { mode: "no-cors", cache: "no-store", signal: ctl.signal }); return true; }
+      catch { return false; }
+      finally { clearTimeout(t); }
+    }
+    (async function go() {
+      if (await up()) { location.replace(url); return; }
+      document.getElementById("going").hidden = true;
+      document.getElementById("down").hidden = false;
+      setTimeout(go, 3000);
+    })();
+  </script>
+</body>
+</html>
