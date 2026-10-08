@@ -78,6 +78,17 @@ npm run dev</pre>
       catch { return false; }
       finally { clearTimeout(t); }
     }
+    // BIP_WEB_URL set to this API's own address would send people round in circles
+    if (new URL(WEB).origin === location.origin) {
+      document.getElementById("going").hidden = true;
+      const down = document.getElementById("down");
+      down.hidden = false;
+      down.querySelector("h1").textContent = "This is the API, not the website";
+      down.querySelector("p").innerHTML = "<code>BIP_WEB_URL</code> is set to this API's own address. In the API's settings, set it to the <b>website's</b> address (the web project's domain) and redeploy.";
+      down.querySelector("pre").remove();
+      down.querySelectorAll("p")[1].remove();
+      return;
+    }
     (async function go() {
       if (await up()) { location.replace(url); return; }
       document.getElementById("going").hidden = true;

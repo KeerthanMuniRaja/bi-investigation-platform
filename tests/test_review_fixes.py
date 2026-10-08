@@ -267,3 +267,9 @@ def test_root_hands_over_to_the_web_app():
     assert "location.replace(url)" in page.text
     assert client.get("/legacy").status_code == 404
     assert client.get("/static/app.js").status_code == 404
+
+
+def test_root_never_redirects_to_itself(monkeypatch):
+    """BIP_WEB_URL accidentally set to the API's own address must not loop."""
+    page = (__import__("pathlib").Path(__file__).resolve().parent.parent / "app/static/handoff.html").read_text(encoding="utf-8")
+    assert "new URL(WEB).origin === location.origin" in page and "This is the API, not the website" in page
