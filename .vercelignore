@@ -1,10 +1,9 @@
-# The API project deploys app/ + api/ only; the web app (web/) is its own Vercel project.
-web/
+# Files the API project (repo root, FastAPI preset) doesn't need in its function.
+# The website is its own Vercel project (Root Directory: web).
 data/
 tests/
 fixtures/
 samples/
-scripts/
 docs/
 supabase/
 **/__pycache__/

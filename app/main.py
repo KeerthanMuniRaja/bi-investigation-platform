@@ -10,8 +10,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional
+
+# Vercel (FastAPI preset) loads this file as the entry point: make sure the
+# project root is importable so `app.*` resolves wherever it's run from
+_ROOT = str(Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 # settings from <project>/.env (DATABASE_URL, SUPABASE_URL, ...) — real environment variables win
 try:
@@ -48,10 +55,17 @@ app = FastAPI(
 # The Next.js frontend (web/) calls this API directly from the browser —
 # directly rather than through the Next proxy so multi-GB .pbix uploads
 # stream straight here. Extra origins: BIP_CORS_ORIGINS="https://a,https://b".
+def _allowed_origins() -> list[str]:
+    """The web app's address(es). BIP_WEB_URL counts too, and a trailing "/"
+    (an easy slip when pasting an address) doesn't stop it matching."""
+    extra = os.environ.get("BIP_CORS_ORIGINS", "").split(",") + [os.environ.get("BIP_WEB_URL", "")]
+    return list(dict.fromkeys(["http://localhost:3000", "http://127.0.0.1:3000",
+                               *[o.strip().rstrip("/") for o in extra if o.strip()]]))
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000",
-                   *[o.strip() for o in os.environ.get("BIP_CORS_ORIGINS", "").split(",") if o.strip()]],
+    allow_origins=_allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
@@ -95,6 +109,13 @@ async def _bad_file(_: Request, exc: FileReadError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
+@app.exception_handler(RuntimeError)
+async def _misconfigured(request: Request, exc: RuntimeError) -> JSONResponse:
+    # e.g. DATABASE_URL missing on Vercel: say so instead of a bare 500
+    log.error("Server error on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
 @app.exception_handler(ValueError)
 async def _bad_input(_: Request, exc: ValueError) -> JSONResponse:
     return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -116,17 +137,37 @@ def me(user: Optional[User] = Depends(require_user)) -> dict:
 
 
 @app.get("/api/info", tags=["meta"])
-def info(store: Store = Depends(get_store)) -> dict:
+def info() -> dict:
+    from app.store.blobs import blobs_from_env
+
     # the web app reads this first: show the sign-in screen or not, offer "Create account" or not
     return {"product": "BI Investigation & Trust Platform", "version": app.version, "docs": "/docs",
             "auth": auth_enabled(), "signup": auth_enabled() and signup_allowed(),
             # with cloud storage, the browser uploads files straight to it (no size limit from the API host)
-            "direct_upload": store.blobs.enabled}
+            "direct_upload": blobs_from_env().enabled}
 
 
 @app.get("/health", tags=["meta"])
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/health/database", tags=["meta"])
+def health_database() -> JSONResponse:
+    """Setup check: can the API reach its database and storage? (No data is read.)"""
+    from app.store.blobs import blobs_from_env
+
+    out: dict = {"database": "postgres" if os.environ.get("DATABASE_URL") else "sqlite (local file)",
+                 "storage": "supabase" if blobs_from_env().enabled else "local disk", "sign_in": auth_enabled()}
+    try:
+        db = get_store().db
+        out["accounts"] = db.count_users()
+        out["status"] = "ok"
+        return JSONResponse(out)
+    except Exception as e:  # noqa: BLE001 - report the reason, it's what the person setting up needs
+        out["status"] = "error"
+        out["error"] = f"{type(e).__name__}: {e}"
+        return JSONResponse(out, status_code=500)
 
 
 @app.get("/stats", tags=["meta"], dependencies=[Depends(require_user)])

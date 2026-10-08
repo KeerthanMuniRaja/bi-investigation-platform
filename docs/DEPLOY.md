@@ -2,7 +2,7 @@
 
 ```
                      ┌──────────── Vercel ────────────┐
-Browser ──► web app (project 1, folder web/) ──► API (project 2, repo root: app/ + api/) ──► Supabase Postgres
+Browser ──► web app (project 2, folder web/) ──► API (project 1, repo root, FastAPI) ──► Supabase Postgres
    │                                                                                         (accounts + records)
    └──── big file uploads go straight to ─────────────────────────────────────────────► Supabase Storage
 ```
@@ -58,8 +58,11 @@ Plan about 30–45 minutes.
 
 1. https://vercel.com → **Add New → Project** → import
    `KeerthanMuniRaja/bi-investigation-platform`.
-2. **Root Directory**: leave it as the repo root (`./`). **Framework Preset**: *Other*.
-   Vercel finds `vercel.json`, `api/index.py` and `requirements.txt`.
+2. Vercel shows two apps it found in the repo. Click **Import single project**
+   on the **app (FastAPI)** row. Keep **Root Directory** `./` and **Application
+   Preset** *FastAPI*. Vercel runs `app/main.py` as one function, installs
+   `requirements.txt`, and reads `vercel.json` (a 300 s time limit) and
+   `.python-version` (Python 3.12).
 3. **Environment Variables:**
 
    | Name | Value |
@@ -81,7 +84,8 @@ Plan about 30–45 minutes.
 
 ## 3. Vercel project 2: the website
 
-1. **Add New → Project** → import the same repo again.
+1. **Add New → Project** → import the same repo again, then click **Import
+   single project** on the **web (Next.js)** row.
 2. **Root Directory**: `web`. Framework: Next.js (detected).
 3. **Environment Variables:** `NEXT_PUBLIC_API_URL` = the API project's URL,
    e.g. `https://bi-investigation-platform-api.vercel.app`.

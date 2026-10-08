@@ -284,3 +284,13 @@ def test_both_supabase_key_formats_are_sent_the_right_way():
     assert legacy.headers == {"apikey": "eyJhbGciOiJIUzI1NiJ9.legacy.jwt", "Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.legacy.jwt"}
     new = SupabaseBlobs("https://example.supabase.co", "sb_secret_abc123")
     assert new.headers == {"apikey": "sb_secret_abc123"}       # not a JWT: apikey header only
+
+
+def test_setup_checks_report_what_is_wrong(monkeypatch):
+    from app.main import _allowed_origins, app
+
+    c = TestClient(app)
+    assert c.get("/health/database").json()["status"] == "ok"            # local SQLite works
+    monkeypatch.setenv("BIP_WEB_URL", "https://bi-web.vercel.app/")       # trailing "/" pasted by mistake
+    monkeypatch.setenv("BIP_CORS_ORIGINS", "https://other.example.com/ , https://bi-web.vercel.app")
+    assert _allowed_origins() == ["http://localhost:3000", "http://127.0.0.1:3000", "https://other.example.com", "https://bi-web.vercel.app"]

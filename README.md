@@ -114,8 +114,8 @@ hashes), and each person sees only the data they loaded.
 - **Supabase**: Postgres for accounts and records (run
   `supabase/migrations/20261008000000_bip_schema.sql` in the SQL editor), and
   Storage for uploaded files.
-- **Vercel project 1, the API**: repo root (`vercel.json`, `api/index.py`). The
-  Python API runs as a serverless function.
+- **Vercel project 1, the API**: repo root, FastAPI preset. `app/main.py` runs
+  as a serverless function (`vercel.json`, `.python-version`).
 - **Vercel project 2, the website**: Root Directory `web`.
 - Big uploads go straight from the browser to Supabase Storage, so Vercel's
   ~4.5 MB request limit doesn't apply to them.
@@ -161,7 +161,6 @@ app/
   api/           FastAPI routers (connections, semantic/lineage, files, datasets, recon,
                  templates, snapshots, investigations, exports)
   static/        handoff.html: the API's root page, which sends people to the web app
-api/index.py     Vercel entry point for the API (vercel.json routes everything to it)
 supabase/        migrations/: the database schema to run in Supabase (same as app/store/schema.sql)
 web/             The frontend: Next.js (App Router) + React + TypeScript + Motion
   app/           routes (the folder tree is the URL scheme, see "Addresses" below)
