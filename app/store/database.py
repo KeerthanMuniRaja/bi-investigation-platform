@@ -261,9 +261,14 @@ class PostgresDocumentDB:
     def __init__(self, dsn: str, pool_size: Optional[int] = None):
         from psycopg_pool import ConnectionPool
 
-        # prepare_threshold=None: works through Supabase's transaction pooler (PgBouncer) too
+        # prepare_threshold=None: works through connection poolers (Neon's -pooler host, PgBouncer).
+        # Serverless databases (Neon suspends after ~5 idle minutes) and sleeping hosts drop open
+        # connections: check each one before handing it out and replace it if it's gone, and don't
+        # keep spare connections idle for long. Keepalives notice a dead connection instead of hanging.
         self.pool = ConnectionPool(dsn, min_size=1, max_size=pool_size or int(os.environ.get("BIP_DB_POOL_SIZE", "10")),
-                                   kwargs={"autocommit": True, "prepare_threshold": None}, open=True)
+                                   kwargs={"autocommit": True, "prepare_threshold": None, "keepalives": 1, "keepalives_idle": 30,
+                                           "keepalives_interval": 10, "keepalives_count": 3},
+                                   check=ConnectionPool.check_connection, max_idle=120, max_lifetime=1800, open=True)
         if os.environ.get("BIP_DB_AUTO_SCHEMA", "true").strip().lower() not in ("0", "false", "no", "off"):
             with self.pool.connection() as conn:
                 conn.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
