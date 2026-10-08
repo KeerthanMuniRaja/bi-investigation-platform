@@ -107,17 +107,19 @@ test runs against its own temporary data folder.
 
 ## Deploying
 
-Built for **Supabase + Vercel**: people sign up with a **username and
-password** (stored in your Supabase database, passwords only as salted
+Built for **Neon + Cloudflare R2 + Vercel**: people sign up with a
+**username and password** (stored in the database, passwords only as salted
 hashes), and each person sees only the data they loaded.
 
-- **Supabase**: Postgres for accounts and records (run
-  `supabase/migrations/20261008000000_bip_schema.sql` in the SQL editor), and
-  Storage for uploaded files.
+- **Neon**: Postgres for accounts and records (run
+  `supabase/migrations/20261008000000_bip_schema.sql` in its SQL editor; any
+  Postgres works).
+- **Cloudflare R2**: a private bucket for uploaded files (any S3-compatible
+  store works; Supabase Storage is also supported).
 - **Vercel project 1, the API**: repo root, FastAPI preset. `app/main.py` runs
   as a serverless function (`vercel.json`, `.python-version`).
 - **Vercel project 2, the website**: Root Directory `web`.
-- Big uploads go straight from the browser to Supabase Storage, so Vercel's
+- Big uploads go straight from the browser to the R2 bucket, so Vercel's
   ~4.5 MB request limit doesn't apply to them.
 - Power BI files are read once: a snapshot of what was read (model, report,
   lineage, first rows of each table) is saved in Postgres and the original is
@@ -156,12 +158,12 @@ app/
                    excel_export.py        reconciliation + investigation workbooks
   services/      recon_service.py: orchestration (upload, materialize datasets, run, templates)
   store/         database.py: document store in SQLite (local) or Postgres (cloud), scoped to
-                 the signed-in owner; blobs.py: uploaded files in Supabase Storage
+                 the signed-in owner; blobs.py: uploaded files in R2 / S3 / Supabase Storage
   auth.py        username + password sign-in: password hashing, tokens, the check on every request
   api/           FastAPI routers (connections, semantic/lineage, files, datasets, recon,
                  templates, snapshots, investigations, exports)
   static/        handoff.html: the API's root page, which sends people to the web app
-supabase/        migrations/: the database schema to run in Supabase (same as app/store/schema.sql)
+supabase/        migrations/: the database schema to run on Postgres (same as app/store/schema.sql)
 web/             The frontend: Next.js (App Router) + React + TypeScript + Motion
   app/           routes (the folder tree is the URL scheme, see "Addresses" below)
   components/    shell (sidebars, breadcrumbs), workspace, model views, lineage, recon

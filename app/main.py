@@ -20,7 +20,7 @@ _ROOT = str(Path(__file__).resolve().parent.parent)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# settings from <project>/.env (DATABASE_URL, SUPABASE_URL, ...) — real environment variables win
+# settings from <project>/.env (DATABASE_URL, R2_BUCKET, ...) — real environment variables win
 try:
     from dotenv import load_dotenv
 
@@ -191,17 +191,22 @@ def _db_hint(message: str, parts) -> str:
         return (f"This is Supabase's Direct connection (IPv6 only), which Vercel can't reach. Use the Transaction pooler: "
                 f"postgresql://postgres.{ref}:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres "
                 "(Supabase > Connect > Transaction pooler shows the exact address).")
+    neon = host.endswith(".neon.tech")
+    if neon and "endpoint" in m and ("not found" in m or "unknown" in m):
+        return "Neon doesn't know this endpoint: copy the connection string again from Neon > Dashboard > Connect."
     if "password authentication failed" in m:
         return "Wrong database password in DATABASE_URL (or special characters in it need %-encoding, e.g. @ -> %40)."
     if "tenant or user not found" in m:
         return "The user in DATABASE_URL must be postgres.<project-ref> when using the Supabase pooler."
     if any(x in m for x in ("could not translate host name", "name or service not known", "nodename nor servname",
                             "failed to resolve host", "getaddrinfo")):
-        return "The host in DATABASE_URL doesn't exist: copy the Transaction pooler string from Supabase > Connect."
+        return "The host in DATABASE_URL doesn't exist: copy the connection string again from your database provider."
     if "timeout" in m or "timed out" in m or "network is unreachable" in m:
-        return ("Can't reach the database host. On Vercel use the Transaction pooler (…pooler.supabase.com:6543), "
-                "not the Direct connection (db.<ref>.supabase.co, IPv6 only).")
-    return "Check DATABASE_URL against Supabase > Connect > Transaction pooler."
+        return ("Can't reach the database host. On Neon, a suspended database wakes in a second or two — retry; "
+                "on Vercel use the pooled connection string (host contains -pooler).")
+    if neon:
+        return "Check DATABASE_URL against Neon > Dashboard > Connect (Connection pooling on)."
+    return "Check DATABASE_URL against your database provider's pooled connection string."
 
 
 @app.get("/health/database", tags=["meta"])
@@ -212,8 +217,10 @@ def health_database() -> JSONResponse:
     from app.store.database import normalize_db_url
 
     url = normalize_db_url(os.environ.get("DATABASE_URL", ""))
-    out: dict = {"database": "postgres" if url else "sqlite (local file)",
-                 "storage": "supabase" if blobs_from_env().enabled else "local disk", "sign_in": auth_enabled()}
+    blobs = blobs_from_env()
+    out: dict = {"database": "postgres" if url else "sqlite (local file)", "storage": blobs.name, "sign_in": auth_enabled()}
+    if blobs.enabled:
+        out["storage_status"] = blobs.check()
     if url:
         # one direct attempt first: the connection pool only says "timed out",
         # Postgres itself says why (wrong password, unknown host, wrong port...)

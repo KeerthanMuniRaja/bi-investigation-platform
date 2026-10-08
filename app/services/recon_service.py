@@ -118,7 +118,8 @@ def start_direct_upload(store: Store, filename: str, kind: str, size: Optional[i
         raise FileReadError(f"File is larger than {limit // (1024 * 1024)} MB.")
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)
     key = f"{store.blobs.folder(current_owner())}/incoming/{uuid.uuid4().hex[:12]}_{safe}"
-    return {"key": key, "upload_url": store.blobs.sign_upload(key)}
+    signed = store.blobs.sign_upload(key)
+    return {"key": key, "upload_url": signed["url"], "upload_headers": signed["headers"]}
 
 
 def finish_direct_upload(store: Store, key: str, filename: str, kind: str) -> FileRecord:

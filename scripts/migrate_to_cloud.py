@@ -5,10 +5,10 @@ owned by one account.
     python scripts/migrate_to_cloud.py --owner keerthan            # dry run: shows what would move
     python scripts/migrate_to_cloud.py --owner keerthan --apply
 
-Reads DATABASE_URL, SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from the
-environment or the project's .env. Records keep their ids; record counters
+Reads DATABASE_URL and the storage settings (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+R2_SECRET_ACCESS_KEY, R2_BUCKET) from the environment or the project's .env. Records keep their ids; record counters
 in the cloud database are moved past the local ones so new ids never clash.
-Uploaded files are copied to Supabase Storage. Running it twice is safe:
+Uploaded files are copied to the storage bucket. Running it twice is safe:
 records already in the cloud are skipped.
 """
 from __future__ import annotations
@@ -60,7 +60,7 @@ def main() -> int:
 
     blobs = blobs_from_env()
     if files and not blobs.enabled:
-        print("! SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY aren't set: the files would stay on this machine only.")
+        print("! No storage bucket set (R2_* variables): the files would stay on this machine only.")
     if not args.apply:
         print("Dry run — nothing copied. Add --apply to copy.")
         return 0

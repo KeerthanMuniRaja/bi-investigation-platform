@@ -149,17 +149,20 @@ function serverInfo() {
 }
 
 async function toStorage(file: File, kind: "table" | "model"): Promise<string> {
-  const { key, upload_url } = await post<{ key: string; upload_url: string }>("/uploads", { filename: file.name, kind, size: file.size });
+  const { key, upload_url, upload_headers } = await post<{ key: string; upload_url: string; upload_headers?: Record<string, string> }>(
+    "/uploads", { filename: file.name, kind, size: file.size });
   let res: Response;
   try {
-    res = await fetch(upload_url, { method: "PUT", body: file, headers: { "Content-Type": file.type || "application/octet-stream", "x-upsert": "true" } });
+    // exactly the headers the storage signed the link for (R2 / S3 reject anything else)
+    res = await fetch(upload_url, { method: "PUT", body: file, headers: upload_headers ?? { "Content-Type": "application/octet-stream" } });
   } catch {
     throw new ApiError(`Couldn't upload ${file.name} to storage — check your connection and try again.`, 0);
   }
   if (!res.ok) {
     const text = await res.text();
     const tooBig = res.status === 413 || /maximum allowed size|too large/i.test(text);
-    throw new ApiError(tooBig ? `${file.name} is bigger than the storage allows (raise the limit under Supabase → Storage → Settings).`
+    throw new ApiError(tooBig ? `${file.name} is bigger than the storage allows.`
+      : res.status === 403 ? `Upload of ${file.name} was refused by the storage (403): check the bucket's CORS policy allows this site.`
       : `Upload of ${file.name} failed (${res.status}).`, res.status);
   }
   return key;

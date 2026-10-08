@@ -304,3 +304,58 @@ def test_database_passwords_with_special_characters_just_work():
     assert normalize_db_url(f"postgresql://postgres.ref:My%40Pass@{host}") == f"postgresql://postgres.ref:My%40Pass@{host}"   # already encoded: unchanged
     assert normalize_db_url(f"postgresql://postgres.ref:plain123@{host}") == f"postgresql://postgres.ref:plain123@{host}"
     assert normalize_db_url("") == ""
+
+
+@pytest.fixture()
+def s3_server():
+    """A local S3-compatible server (stands in for Cloudflare R2)."""
+    moto_server = pytest.importorskip("moto.server")
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = moto_server.ThreadedMotoServer(ip_address="127.0.0.1", port=port, verbose=False)
+    server.start()
+    yield f"http://127.0.0.1:{port}"
+    server.stop()
+
+
+def test_r2_storage_uploads_through_one_time_links(s3_server, tmp_path):
+    from app.services import recon_service
+    from app.store.blobs import S3Blobs
+
+    store = reset_store(str(tmp_path / "data"))
+    store.blobs = S3Blobs("bip-files", s3_server, "test-key", "test-secret", region="us-east-1",
+                          cors_origins=("https://bi-web.vercel.app",))
+    reset = set_owner("ann")
+    try:
+        started = recon_service.start_direct_upload(store, "tableau_sales_by_region.csv", "table", 1000)
+        assert started["key"].startswith("ann/incoming/") and started["upload_headers"] == {"Content-Type": "application/octet-stream"}
+        cors = store.blobs.client.get_bucket_cors(Bucket="bip-files")["CORSRules"][0]
+        assert "https://bi-web.vercel.app" in cors["AllowedOrigins"] and "PUT" in cors["AllowedMethods"]
+        body = (SAMPLES / "tableau_sales_by_region.csv").read_bytes()
+        put = httpx.put(started["upload_url"], content=body, headers=started["upload_headers"])   # what the browser does
+        assert put.status_code == 200, put.text
+        record = recon_service.finish_direct_upload(store, started["key"], "tableau_sales_by_region.csv", "table")
+        assert record.blob_key == started["key"] and record.sheets
+        (store.upload_dir / record.stored_as).unlink()                          # a fresh server: fetch it back
+        assert store.resolve_file(record.file_id)[1].read_bytes() == body
+        assert recon_service.delete_file(store, record.file_id)
+        assert store.blobs.client.list_objects_v2(Bucket="bip-files").get("KeyCount", 0) == 0
+        assert store.blobs.check() == "ok"
+    finally:
+        set_owner("local")
+        del reset
+
+
+def test_r2_is_chosen_from_the_environment(monkeypatch):
+    from app.store.blobs import S3Blobs, blobs_from_env
+
+    for k, v in {"R2_ACCOUNT_ID": "abc123", "R2_ACCESS_KEY_ID": "k", "R2_SECRET_ACCESS_KEY": "s", "R2_BUCKET": "bip-files",
+                 "BIP_WEB_URL": "https://bi-web-drab.vercel.app/"}.items():
+        monkeypatch.setenv(k, v)
+    blobs = blobs_from_env()
+    assert isinstance(blobs, S3Blobs) and blobs.bucket == "bip-files"
+    assert blobs.client.meta.endpoint_url == "https://abc123.r2.cloudflarestorage.com"
+    assert "https://bi-web-drab.vercel.app" in blobs.cors_origins
