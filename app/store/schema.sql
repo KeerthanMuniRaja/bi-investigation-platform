@@ -10,6 +10,8 @@
 --                  templates, investigations) as JSON, with the username
 --                  that owns it; the API only ever shows people their own rows
 --   bip.counters   running numbers for readable ids (CONN0001, FILE0001, ...)
+--   bip.file_parts uploaded Excel/CSV files, in parts of a few MB, when no
+--                  storage bucket is set up (see app/store/blobs.py)
 --
 -- Only the API (connecting with the database password) uses these tables.
 -- They live in a private schema with row-level security on and no policies,
@@ -41,7 +43,16 @@ create table if not exists bip.users (
 -- row-level policies means nothing is reachable through Supabase's public APIs
 alter table bip.documents enable row level security;
 alter table bip.counters enable row level security;
+create table if not exists bip.file_parts (
+    key        text not null,
+    part       integer not null,
+    owner      text not null,
+    data       bytea not null,
+    created_at timestamptz not null default now(),
+    primary key (key, part)
+);
 alter table bip.users enable row level security;
+alter table bip.file_parts enable row level security;
 revoke all on schema bip from public;
 do $$ begin
   if exists (select 1 from pg_roles where rolname = 'anon') then execute 'revoke all on schema bip from anon'; end if;

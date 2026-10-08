@@ -99,8 +99,10 @@ def save_model_upload(store: Store, filename: str, content: Content) -> FileReco
     if ext not in MODEL_EXTENSIONS:
         raise FileReadError(f"'{name}' isn't a Power BI file. Upload a .pbix, .pbit, .bim or a zipped PBIP project.")
     stored_as, size = _write_upload(store, name, content, MAX_MODEL_BYTES)
+    # files kept in the database: a Power BI file that is deleted right after reading isn't copied there
+    copy = not (store.blobs.name == "database" and not keep_model_files(store))
     record = FileRecord(file_id=stored_as.split("_", 1)[0], name=name, stored_as=stored_as, size=size, kind="model",
-                        blob_key=_to_cloud(store, store.upload_dir / stored_as))
+                        blob_key=_to_cloud(store, store.upload_dir / stored_as) if copy else None)
     store.files[record.file_id] = record
     return record
 
@@ -157,8 +159,11 @@ def open_model_file(store: Store, record: FileRecord) -> tuple[str, list[str]]:
     """Create a connection for an uploaded Power BI file and build its lineage graph."""
     from app.connectors.registry import ConnectionRecord
 
+    from app.services.sessions import current_session_id, temporary_dashboards
+
     conn = ConnectionRecord(id=store.next_id("CONN"), name=Path(record.name).stem, platform="pbix",
-                            file_ids=[record.file_id], workspace_id="file")
+                            file_ids=[record.file_id], workspace_id="file",
+                            session_id=current_session_id() if temporary_dashboards() else None)
     try:
         store.add_connection(conn, {})
         _, warnings = store.sync(conn.id, "file")   # also saves the snapshot of what was read

@@ -1,0 +1,16 @@
+# Wakes the API every 30 minutes so ended sign-in sessions have their Power BI
+# dashboards removed on time, even when nobody is using the site (Render's free
+# plan sleeps after 15 idle minutes, and only cleans up when it wakes).
+# Turn on: repo Settings -> Secrets and variables -> Actions -> Variables ->
+# New variable API_URL = https://<your-api>.onrender.com
+name: session clean-up
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    if: ${{ vars.API_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS --retry 3 --retry-delay 20 --max-time 120 "${{ vars.API_URL }}/health"

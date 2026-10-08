@@ -28,6 +28,7 @@ def create_snapshot(req: CreateSnapshotRequest, store: Store = Depends(get_store
         filters=req.filters,
         snapshot_id=snapshot_id,
     )
+    snapshot.connection_id = req.connection_id
     store.snapshots[snapshot_id] = snapshot
     return snapshot
 

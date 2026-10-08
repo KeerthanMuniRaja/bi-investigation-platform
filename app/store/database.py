@@ -47,9 +47,35 @@ from app.store.blobs import Blobs, blobs_from_env
 
 M = TypeVar("M", bound=BaseModel)
 
+
+def _close(connector) -> None:
+    if connector is not None and hasattr(connector, "close"):
+        connector.close()
+
+
+def release_memory() -> None:
+    """Free what a parsed file left behind and hand it back to the system
+    (on Linux, freed memory otherwise stays with the process)."""
+    import gc
+
+    gc.collect()
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
 READ_FAILED = ("Reading this Power BI file failed twice — most likely the server ran out of memory or time "
                "(Vercel gives the API 2 GB on the Hobby plan, 4 GB on Pro). Delete this dashboard and upload a smaller "
                "file, or run the API on a server with more memory.")
+
+
+class SessionRecord(BaseModel):
+    """One sign-in (see app/services/sessions.py)."""
+    session_id: str
+    created_at: str
+    last_seen_at: str
 
 
 class FileRecord(BaseModel):
@@ -339,6 +365,21 @@ def on_vercel() -> bool:
     return bool(os.environ.get("VERCEL"))
 
 
+def hosting() -> str:
+    """The hosting platform, when it's one whose disk doesn't last."""
+    if os.environ.get("VERCEL"):
+        return "Vercel"
+    if os.environ.get("RENDER"):
+        return "Render"
+    return ""
+
+
+def ephemeral_disk() -> bool:
+    """Is this server's disk wiped on restart/redeploy? (Vercel always; Render
+    unless a persistent disk is mounted and BIP_DATA_DIR points at it.)"""
+    return on_vercel() or (bool(os.environ.get("RENDER")) and not os.environ.get("BIP_DATA_DIR"))
+
+
 def default_data_dir() -> str:
     # Vercel functions can only write to /tmp (a scratch space that doesn't last)
     return os.environ.get("BIP_DATA_DIR") or ("/tmp/bip" if on_vercel() else "./data")
@@ -365,9 +406,9 @@ def open_database(data_dir: Path, db_path: Optional[str] = None) -> DocumentDB:
     url = normalize_db_url(os.environ.get("DATABASE_URL", ""))
     if url and db_path is None:
         return PostgresDocumentDB(url)
-    if on_vercel() and db_path is None:
-        raise RuntimeError("DATABASE_URL isn't set. On Vercel the data must live in Postgres (Supabase): "
-                           "add DATABASE_URL in the project's Environment Variables.")
+    if ephemeral_disk() and db_path is None:
+        raise RuntimeError(f"DATABASE_URL isn't set. On {hosting()} the data must live in Postgres (e.g. Neon): "
+                           "add DATABASE_URL in the service's environment variables.")
     return SqliteDocumentDB(db_path or str(data_dir / "bip.sqlite3"))
 
 
@@ -448,6 +489,7 @@ class Store:
         self.definitions = Collection(self.db, "definitions", ReconciliationDefinition, "template")
         self.investigations = Collection(self.db, "investigations", Investigation, "investigation")
         self.model_snapshots = Collection(self.db, "model_snapshots", ModelSnapshot, "model snapshot")
+        self.sessions = Collection(self.db, "sessions", SessionRecord, "session")
 
         self._connectors: dict[str, BIConnector] = {}
         self._secrets: dict[str, dict[str, str]] = {}
@@ -486,7 +528,7 @@ class Store:
     def remove_connection(self, connection_id: str) -> bool:
         self.model_snapshots.delete(connection_id)
         with self._lock:
-            self._connectors.pop(connection_id, None)  # also frees a parsed model held in memory
+            _close(self._connectors.pop(connection_id, None))  # also frees a parsed model held in memory
             self._secrets.pop(connection_id, None)
             self._graphs.pop(connection_id, None)
             self._overviews.pop(connection_id, None)
@@ -544,10 +586,8 @@ class Store:
             return False
         # the parsed file can hold hundreds of MB: from now on work from the snapshot
         with self._lock:
-            self._connectors.pop(connection_id, None)
-        import gc
-
-        gc.collect()
+            _close(self._connectors.pop(connection_id, None))
+        release_memory()
         for file_id in record.file_ids:
             f = self.files.get(file_id)
             if f is None or not f.kept:

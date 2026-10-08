@@ -138,10 +138,10 @@ export async function syncConnection(cid: string) {
   return r;
 }
 
-/* With cloud storage on (always the case on Vercel), files go straight from
-   the browser to Supabase Storage through a one-time URL, then the API
-   imports them: hosts like Vercel cap a request at ~4.5 MB. Otherwise they
-   are posted to the API as before. */
+/* With a storage bucket (R2 / Supabase), files go straight from the browser
+   to it through a one-time URL, then the API imports them: hosts like Vercel
+   cap a request at ~4.5 MB. Otherwise (local, or files kept in the database
+   on Render) they are posted to the API. */
 let infoPromise: Promise<{ direct_upload?: boolean }> | null = null;
 function serverInfo() {
   infoPromise ??= openApi<{ direct_upload?: boolean }>("GET", "/api/info").catch((e) => { infoPromise = null; throw e; });

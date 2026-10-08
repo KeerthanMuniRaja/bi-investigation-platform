@@ -107,23 +107,22 @@ test runs against its own temporary data folder.
 
 ## Deploying
 
-Built for **Neon + Cloudflare R2 + Vercel**: people sign up with a
-**username and password** (stored in the database, passwords only as salted
-hashes), and each person sees only the data they loaded.
+Built for **Neon + Render + Vercel**: people sign up with a **username and
+password** (stored in the database, passwords only as salted hashes), and
+each person sees only the data they loaded.
 
-- **Neon**: Postgres for accounts and records (run
-  `supabase/migrations/20261008000000_bip_schema.sql` in its SQL editor; any
-  Postgres works).
-- **Cloudflare R2**: a private bucket for uploaded files (any S3-compatible
-  store works; Supabase Storage is also supported).
-- **Vercel project 1, the API**: repo root, FastAPI preset. `app/main.py` runs
-  as a serverless function (`vercel.json`, `.python-version`).
-- **Vercel project 2, the website**: Root Directory `web`.
-- Big uploads go straight from the browser to the R2 bucket, so Vercel's
-  ~4.5 MB request limit doesn't apply to them.
-- Power BI files are read once: a snapshot of what was read (model, report,
-  lineage, first rows of each table) is saved in Postgres and the original is
-  deleted, so it uses no storage (`BIP_KEEP_MODEL_FILES=true` keeps it).
+- **Neon**: Postgres for accounts, records and uploaded Excel/CSV files
+  (no separate storage service; an R2/S3 bucket is optional).
+- **Render, the API**: [`render.yaml`](render.yaml) blueprint (Python,
+  FastAPI); only `DATABASE_URL` has to be entered.
+- **Vercel, the website**: Root Directory `web`, `NEXT_PUBLIC_API_URL` = the
+  Render address.
+- **Power BI dashboards last one sign-in session**: what was read from the
+  .pbix is kept in the database while the person uses the site, and
+  hard-deleted when they sign out or after 30 minutes away. The .pbix itself
+  is deleted right after reading.
+- Reading a .pbix is tuned for 512 MB servers (the decompressed model goes to
+  a temp file; table previews hold back near the memory limit).
 
 Step-by-step, every setting and Vercel's limits:
 **[docs/DEPLOY.md](docs/DEPLOY.md)**. For very large .pbix files the same API
@@ -158,7 +157,7 @@ app/
                    excel_export.py        reconciliation + investigation workbooks
   services/      recon_service.py: orchestration (upload, materialize datasets, run, templates)
   store/         database.py: document store in SQLite (local) or Postgres (cloud), scoped to
-                 the signed-in owner; blobs.py: uploaded files in R2 / S3 / Supabase Storage
+                 the signed-in owner; blobs.py: uploaded files in Postgres / R2 / S3 / Supabase Storage
   auth.py        username + password sign-in: password hashing, tokens, the check on every request
   api/           FastAPI routers (connections, semantic/lineage, files, datasets, recon,
                  templates, snapshots, investigations, exports)

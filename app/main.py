@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import asynccontextmanager
 import os
 import sys
 from pathlib import Path
@@ -42,7 +43,27 @@ from app.store.database import Store, get_store
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 log = logging.getLogger("bip")
 
+@asynccontextmanager
+async def _lifespan(_app):
+    # a server that was asleep (Render's free plan sleeps after 15 idle minutes) first
+    # removes the dashboards of sessions that ended meanwhile
+    _sweep_sessions()
+    yield
+
+
+def _sweep_sessions() -> None:
+    if not auth_enabled():
+        return
+    try:
+        from app.services import sessions
+
+        sessions.maybe_sweep(get_store())
+    except Exception:  # noqa: BLE001 - e.g. the database isn't reachable yet; the next request retries
+        log.exception("session clean-up couldn't start")
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     title="BI Investigation & Trust Platform",
     version="1.0.0",
     description=(
@@ -169,17 +190,22 @@ def me(user: Optional[User] = Depends(require_user)) -> dict:
 
 @app.get("/api/info", tags=["meta"])
 def info() -> dict:
+    from app.services.sessions import idle_seconds, temporary_dashboards
     from app.store.blobs import blobs_from_env
 
     # the web app reads this first: show the sign-in screen or not, offer "Create account" or not
     return {"product": "BI Investigation & Trust Platform", "version": app.version, "docs": "/docs",
             "auth": auth_enabled(), "signup": auth_enabled() and signup_allowed(),
             # with cloud storage, the browser uploads files straight to it (no size limit from the API host)
-            "direct_upload": blobs_from_env().enabled}
+            "direct_upload": blobs_from_env().direct_upload,
+            # Power BI dashboards are removed when the sign-in session ends
+            "temporary_dashboards": temporary_dashboards(), "idle_minutes": round(idle_seconds() / 60)}
 
 
 @app.get("/health", tags=["meta"])
 def health() -> dict:
+    # also what a scheduled ping hits (see .github/workflows/session-cleanup.yml)
+    _sweep_sessions()
     return {"status": "ok"}
 
 

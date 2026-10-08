@@ -17,6 +17,8 @@ Configuration (environment variables):
                          (the very first account can always be created);
                          add accounts with scripts/create_user.py
   BIP_SESSION_DAYS       how long a sign-in lasts (default 7)
+  BIP_SESSION_IDLE_MINUTES  a session with no request for this long ends
+                         (default 30); see app/services/sessions.py
 
 Without BIP_AUTH sign-in is off: everything belongs to one local workspace,
 as before (local development and the test suite).
@@ -47,6 +49,14 @@ _owner: ContextVar[str] = ContextVar("bip_owner", default=LOCAL_OWNER)
 
 def current_owner() -> str:
     return _owner.get()
+
+
+# the sign-in session of the current request (None when sign-in is off)
+_session: ContextVar[Optional[str]] = ContextVar("bip_session", default=None)
+
+
+def current_session() -> Optional[str]:
+    return _session.get()
 
 
 def set_owner(owner: str):
@@ -156,9 +166,11 @@ def _secret_key() -> str:
     key = os.environ.get("BIP_SECRET_KEY", "").strip()
     if key:
         return key
-    if os.environ.get("VERCEL"):
-        # each Vercel instance would invent its own key and sign everyone out
-        raise HTTPException(500, "BIP_SECRET_KEY isn't set: add it in the Vercel project's Environment Variables.")
+    from app.store.database import ephemeral_disk, hosting
+
+    if ephemeral_disk():
+        # a generated key would be lost on the next restart (or differ per instance) and sign everyone out
+        raise HTTPException(500, f"BIP_SECRET_KEY isn't set: add it in the {hosting()} service's environment variables.")
     global _generated_key
     with _key_lock:
         if _generated_key is None:
@@ -172,16 +184,16 @@ def _secret_key() -> str:
         return _generated_key
 
 
-def issue_token(username: str, version: int) -> str:
+def issue_token(username: str, version: int, session_id: str) -> str:
     import jwt
 
     days = float(os.environ.get("BIP_SESSION_DAYS", "7") or 7)
     now = int(time.time())
-    return jwt.encode({"sub": username, "ver": version, "iat": now, "exp": now + int(days * 86400), "aud": "bip"},
+    return jwt.encode({"sub": username, "ver": version, "sid": session_id, "iat": now, "exp": now + int(days * 86400), "aud": "bip"},
                       _secret_key(), algorithm="HS256")
 
 
-def read_token(token: str) -> tuple[str, int]:
+def read_token(token: str) -> tuple[str, int, Optional[str]]:
     import jwt
 
     try:
@@ -190,7 +202,7 @@ def read_token(token: str) -> tuple[str, int]:
         raise HTTPException(401, "Your session has expired — sign in again.") from e
     except jwt.PyJWTError as e:
         raise HTTPException(401, "Not signed in.") from e
-    return str(claims["sub"]), int(claims.get("ver", 0))
+    return str(claims["sub"]), int(claims.get("ver", 0)), claims.get("sid")
 
 
 # --------------------------------------------------------------- dependency
@@ -205,14 +217,21 @@ async def require_user(request: Request) -> Optional[User]:
     scheme, _, token = header.partition(" ")
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(401, "Sign in to use this app.", headers={"WWW-Authenticate": "Bearer"})
-    username, version = read_token(token.strip())
+    username, version, sid = read_token(token.strip())
+    from app.services import sessions
     from app.store.database import get_store
 
-    account = await run_in_threadpool(get_store().db.get_user, username)
+    store = get_store()
+    account = await run_in_threadpool(store.db.get_user, username)
     # a password change (or a disabled account) ends every earlier sign-in
-    if account is None or account["disabled"] or int(account["token_version"]) != version:
+    if account is None or account["disabled"] or int(account["token_version"]) != version or not sid:
         raise HTTPException(401, "Your session has ended — sign in again.")
     _owner.set(username)
+    _session.set(sid)
+    # signed out, or away longer than the idle limit: the session (and its dashboards) are gone
+    if not await run_in_threadpool(sessions.touch, store, sid):
+        raise HTTPException(401, "Your session ended — sign in again.")
+    sessions.maybe_sweep(store)
     user = User(username=username, name=account.get("display_name"))
     request.state.user = user
     return user

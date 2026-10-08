@@ -1,0 +1,33 @@
+# Render Blueprint for the Python API (FastAPI).
+# Render dashboard -> New -> Blueprint -> pick this repo; it asks for DATABASE_URL.
+# The website stays on Vercel (folder web/), with NEXT_PUBLIC_API_URL = this service's URL.
+services:
+  - type: web
+    name: bi-api
+    runtime: python
+    region: ohio            # next to the Neon database (AWS us-east-2)
+    plan: free              # 512 MB, sleeps after 15 idle minutes; "starter" (512 MB) never sleeps; "standard" has 2 GB
+    buildCommand: pip install -r requirements.txt
+    # --proxy-headers: see each visitor's address behind Render's proxy (sign-in throttling)
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DATABASE_URL          # Neon -> Connect -> pooled connection string
+        sync: false
+      - key: BIP_AUTH
+        value: password
+      - key: BIP_SECRET_KEY        # signs sign-in tokens; Render generates a long random value
+        generateValue: true
+      - key: BIP_ALLOW_SIGNUP
+        value: "true"
+      - key: BIP_DB_POOL_SIZE
+        value: "3"
+      - key: BIP_MEMORY_LIMIT_MB   # match the plan: table previews hold back near this
+        value: "512"
+      - key: BIP_SESSION_IDLE_MINUTES
+        value: "30"
+      - key: BIP_WEB_URL           # the website's address (allowed to call this API)
+        value: https://bi-web-drab.vercel.app

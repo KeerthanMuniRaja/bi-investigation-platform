@@ -8,11 +8,16 @@ its disk) can fetch a file back on first use, and the browser can upload big
 files straight to the bucket through one-time links. Without it, files stay
 in the uploads folder only.
 
+  Postgres (no extra service): with DATABASE_URL set and no bucket below,
+    files are kept in the database itself (table bip.file_parts). Right for
+    hosts whose disk is wiped on restart (Render, Railway) and modest files.
   Cloudflare R2 (or any S3-compatible store):
     R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
     R2_ENDPOINT        optional, e.g. https://<account>.eu.r2.cloudflarestorage.com
   Supabase Storage:
     SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY, BIP_STORAGE_BUCKET (default "bip-files")
+
+  BIP_FILE_STORAGE   force one: local | database | r2 | supabase (default: the first configured)
 
 Storage keys belong on the API server only — never in the web app or browser.
 """
@@ -28,8 +33,8 @@ CHUNK = 1024 * 1024
 
 
 class Blobs(Protocol):
-    enabled: bool
-
+    enabled: bool                  # files survive this server's disk being wiped
+    direct_upload: bool            # the browser can upload straight to storage (sign_upload)
     name: str
 
     def folder(self, owner: str) -> str: ...
@@ -43,6 +48,7 @@ class Blobs(Protocol):
 class LocalBlobs:
     """No cloud storage: the uploads folder is the only copy."""
     enabled = False
+    direct_upload = False
     name = "local disk"
 
     def folder(self, owner: str) -> str:
@@ -67,6 +73,7 @@ class LocalBlobs:
 class SupabaseBlobs:
     """Private Supabase Storage bucket, through its REST API."""
     enabled = True
+    direct_upload = True
     name = "supabase"
 
     def __init__(self, url: str, service_key: str, bucket: str = "bip-files", client=None, timeout: float = 600.0):
@@ -165,6 +172,7 @@ class SupabaseBlobs:
 class S3Blobs:
     """Cloudflare R2 (or any S3-compatible store), through boto3."""
     enabled = True
+    direct_upload = True
     name = "r2"
 
     def __init__(self, bucket: str, endpoint_url: Optional[str], access_key: str, secret_key: str,
@@ -257,19 +265,110 @@ class S3Blobs:
             return f"{type(e).__name__}: {e}"
 
 
+class DatabaseBlobs:
+    """Files kept in Postgres, in parts of a few MB (bip.file_parts): no
+    storage service to set up. Uploads go through the API (no size cap on
+    hosts like Render); mind the database plan's storage (Neon free: 0.5 GB)."""
+    enabled = True
+    direct_upload = False
+    name = "database"
+    PART = 4 * 1024 * 1024
+    TABLE = """
+        create schema if not exists bip;
+        create table if not exists bip.file_parts (
+            key        text not null,
+            part       integer not null,
+            owner      text not null,
+            data       bytea not null,
+            created_at timestamptz not null default now(),
+            primary key (key, part)
+        );
+        alter table bip.file_parts enable row level security;
+    """
+
+    def __init__(self, dsn: str):
+        self.dsn = dsn
+        self._ready = False
+
+    folder = staticmethod(SupabaseBlobs.folder)
+
+    def _connect(self):
+        import psycopg
+
+        # prepare_threshold=None: works through connection poolers (Neon's -pooler host, PgBouncer)
+        conn = psycopg.connect(self.dsn, prepare_threshold=None, connect_timeout=20)
+        if not self._ready:
+            with conn.transaction():
+                conn.execute(self.TABLE)
+            self._ready = True
+        return conn
+
+    def sign_upload(self, key: str) -> dict:
+        raise RuntimeError("Files kept in the database are uploaded through the API, not with upload links.")
+
+    def check(self) -> str:
+        try:
+            with self._connect() as conn:
+                n, size = conn.execute("select count(distinct key), coalesce(sum(length(data)), 0) from bip.file_parts").fetchone()
+            return "ok" if not n else f"ok ({n} files, {size / 1024 / 1024:.1f} MB)"
+        except Exception as e:  # noqa: BLE001
+            return f"{type(e).__name__}: {e}"
+
+    def put(self, owner: str, name: str, path: Path) -> Optional[str]:
+        key = f"{self.folder(owner)}/{name}"
+        try:
+            with self._connect() as conn, conn.transaction(), open(path, "rb") as f:
+                conn.execute("delete from bip.file_parts where key = %s", (key,))
+                part = 0
+                while chunk := f.read(self.PART):
+                    conn.execute("insert into bip.file_parts (key, part, owner, data) values (%s, %s, %s, %s)", (key, part, owner, chunk))
+                    part += 1
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"Couldn't save {path.name} in the database: {e}") from e
+        return key
+
+    def fetch(self, key: str, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part_path = path.with_name(path.name + ".part")
+        with self._connect() as conn:
+            parts = [r[0] for r in conn.execute("select part from bip.file_parts where key = %s order by part", (key,))]
+            if not parts:
+                raise FileNotFoundError(f"{path.name} isn't in the database any more.")
+            with open(part_path, "wb") as out:
+                for n in parts:  # one part at a time: memory stays at a few MB
+                    out.write(conn.execute("select data from bip.file_parts where key = %s and part = %s", (key, n)).fetchone()[0])
+        part_path.replace(path)
+
+    def delete(self, key: str) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute("delete from bip.file_parts where key = %s", (key,))
+                conn.commit()
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+
+
 def _web_origins() -> tuple[str, ...]:
     extra = os.environ.get("BIP_CORS_ORIGINS", "").split(",") + [os.environ.get("BIP_WEB_URL", "")]
     return tuple(dict.fromkeys(["http://localhost:3000", "http://127.0.0.1:3000", *[o.strip().rstrip("/") for o in extra if o.strip()]]))
 
 
 def blobs_from_env() -> Blobs:
+    choice = os.environ.get("BIP_FILE_STORAGE", "").strip().lower()
     bucket = os.environ.get("R2_BUCKET", "").strip()
     access, secret = os.environ.get("R2_ACCESS_KEY_ID", "").strip(), os.environ.get("R2_SECRET_ACCESS_KEY", "").strip()
     account, endpoint = os.environ.get("R2_ACCOUNT_ID", "").strip(), os.environ.get("R2_ENDPOINT", "").strip()
-    if bucket and access and secret and (account or endpoint):
-        return S3Blobs(bucket, endpoint or f"https://{account}.r2.cloudflarestorage.com", access, secret, cors_origins=_web_origins())
     url = os.environ.get("SUPABASE_URL", "").strip()
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-    if url and key:
+    dsn = os.environ.get("DATABASE_URL", "").strip()
+    if choice in ("", "r2", "s3") and bucket and access and secret and (account or endpoint):
+        return S3Blobs(bucket, endpoint or f"https://{account}.r2.cloudflarestorage.com", access, secret, cors_origins=_web_origins())
+    if choice in ("", "supabase") and url and key:
         return SupabaseBlobs(url, key, os.environ.get("BIP_STORAGE_BUCKET", "bip-files").strip() or "bip-files")
+    if choice in ("", "database", "postgres") and dsn:
+        from app.store.database import normalize_db_url
+
+        return DatabaseBlobs(normalize_db_url(dsn))
+    if choice not in ("", "local", "disk"):
+        raise RuntimeError(f"BIP_FILE_STORAGE={choice} but its settings are missing (see app/store/blobs.py).")
     return LocalBlobs()

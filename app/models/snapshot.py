@@ -30,6 +30,7 @@ class CapturedValue(BaseModel):
 
 class VisualSnapshot(BaseModel):
     snapshot_id: str
+    connection_id: Optional[str] = None   # the dashboard it was captured from
     platform: str = "powerbi"
     report_id: str
     page_id: str

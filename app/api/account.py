@@ -13,6 +13,7 @@ from app.auth import (
     require_user, signup_allowed, throttle, verify_password,
 )
 from app.models.graph import utcnow
+from app.services import sessions
 from app.store.database import Store, UsernameTaken, get_store
 
 router = APIRouter(prefix="/auth", tags=["account"])
@@ -32,9 +33,10 @@ class PasswordChange(BaseModel):
     new_password: str = Field(..., max_length=256)
 
 
-def _session(user: dict) -> dict:
-    return {"token": issue_token(user["username"], int(user["token_version"])),
-            "user": {"username": user["username"], "name": user.get("display_name") or user["username"]}}
+def _session(user: dict, session_id: str) -> dict:
+    return {"token": issue_token(user["username"], int(user["token_version"]), session_id),
+            "user": {"username": user["username"], "name": user.get("display_name") or user["username"]},
+            "temporary_dashboards": sessions.temporary_dashboards()}
 
 
 def _require_on() -> None:
@@ -57,7 +59,7 @@ def signup(req: SignupRequest, store: Store = Depends(get_store)) -> dict:
         store.db.create_user(user)
     except UsernameTaken as e:
         raise HTTPException(409, "That username is taken — pick another one.") from e
-    return _session(user)
+    return _session(user, sessions.start(store, username))
 
 
 @router.post("/login")
@@ -76,7 +78,7 @@ def login(req: Credentials, request: Request, store: Store = Depends(get_store))
         raise HTTPException(403, "This account is switched off. Ask the administrator.")
     throttle.clear(f"user:{username}")
     store.db.update_user(username, last_login_at=utcnow().isoformat())
-    return _session(user)
+    return _session(user, sessions.start(store, username))
 
 
 @router.post("/password")
@@ -88,4 +90,13 @@ async def change_password(req: PasswordChange, user: Optional[User] = Depends(re
     check_password(req.new_password)
     version = int(account["token_version"]) + 1  # every other sign-in of this account ends
     await run_in_threadpool(store.db.update_user, user.username, password_hash=hash_password(req.new_password), token_version=version)
-    return _session({**account, "token_version": version})
+    return _session({**account, "token_version": version}, sessions.current_session_id())
+
+
+@router.post("/logout")
+async def logout(user: Optional[User] = Depends(require_user), store: Store = Depends(get_store)) -> dict:
+    """Sign out: end this session and hard-delete the Power BI dashboards
+    opened in it (see app/services/sessions.py)."""
+    _require_on()
+    removed = await run_in_threadpool(sessions.end, store, sessions.current_session_id())
+    return {"signed_out": True, "dashboards_removed": removed}

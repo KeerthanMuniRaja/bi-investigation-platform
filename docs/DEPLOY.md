@@ -1,158 +1,147 @@
-# Going live on Neon + Cloudflare R2 + Vercel
+# Going live: Neon + Render + Vercel
 
 ```
-                     ┌──────────── Vercel ────────────┐
-Browser ──► web app (project 2, folder web/) ──► API (project 1, repo root, FastAPI) ──► Neon Postgres
-   │                                                                                     (accounts + records)
-   └──── big file uploads go straight to ─────────────────────────────────────────► Cloudflare R2 bucket
+Browser ──► website (Vercel, folder web/) ──► API (Render, repo root, FastAPI) ──► Neon Postgres
+                                                                                    accounts, records,
+                                                                                    Excel/CSV files
 ```
 
-- **Neon** (Postgres) holds the accounts (username + hashed password) and
-  every record: each person's dashboards, files, results and investigations.
-- **Cloudflare R2** holds the uploaded files. The free tier gives 10 GB of
-  storage with no per-file size limit that matters here, and downloads are
-  free.
-- **Power BI files are read once and not kept.** The app saves a snapshot of
-  what it read in Postgres, typically under 1 MB. The snapshot covers the
-  model, measures with DAX, relationships, report pages and visuals, lineage,
-  and the first 50 rows of each table for previews. The uploaded .pbix is
-  then deleted from R2.
-- **Vercel** runs both parts from the same GitHub repo, as two projects: the
-  website, and the Python API as a serverless function.
-- People **sign up with a username and password**. After signing in, each
-  person sees only the data they loaded.
+- **Neon** (Postgres) holds everything that has to last:
+  - the accounts (username + hashed password);
+  - each person's records;
+  - the uploaded Excel/CSV files, in the `bip.file_parts` table.
 
-Plan about 30 minutes.
+  No separate file storage service is needed.
+- **Render** runs the Python API. Its disk is wiped on every restart, which
+  is fine: the API keeps nothing there that matters.
+- **Vercel** runs the website.
+- People **sign up with a username and password**. Each person sees only
+  their own data.
+
+## How long data is kept
+
+**Power BI dashboards last one sign-in session.** While someone is signed
+in and using the site, the dashboard is available. The app keeps a snapshot
+of what it read from the .pbix in Neon:
+- the model, measures, relationships and lineage;
+- report pages and visuals;
+- the first 50 rows of each table.
+
+The uploaded .pbix itself is deleted as soon as it has been read.
+
+The session ends when:
+- the person **signs out**;
+- **30 minutes pass with the site closed** (`BIP_SESSION_IDLE_MINUTES`; an
+  open tab checks in every 4 minutes, so it's closing the tab that starts
+  the clock);
+- the sign-in expires (`BIP_SESSION_DAYS`, 7).
+
+When the session ends, the dashboard and everything read from it are
+**hard-deleted** from the database:
+- the dashboard and its snapshot;
+- data pulled from its tables and visuals, and copies of that data;
+- results and templates built on it;
+- investigations about it.
+
+Excel/CSV files, and results that compare only those, stay. To keep
+dashboards across sessions instead, set `BIP_TEMPORARY_DASHBOARDS=false`.
+
+Plan about 20 minutes.
 
 ---
 
 ## 1. Neon (database)
 
-1. https://neon.tech → **New project**. Pick a region close to your Vercel
-   functions (Vercel's default is Washington DC, `iad1`, so pick **US East**).
-2. **Dashboard → Connect.** Turn **Connection pooling** on and copy the
+1. https://neon.tech → **New project**, region **AWS US East 2 (Ohio)**,
+   which matches the Render region in `render.yaml`.
+2. **Dashboard → Connect**: turn **Connection pooling** on and copy the
    connection string. Its host contains `-pooler`. This is `DATABASE_URL`.
-   Use the pooled one on Vercel, because serverless functions open many short
-   connections.
-3. **Create the schema.** Open **SQL Editor**, paste the whole of
+3. Optional: **SQL Editor** → paste
    [`supabase/migrations/20261008000000_bip_schema.sql`](../supabase/migrations/20261008000000_bip_schema.sql)
-   (plain Postgres; the folder name is historical) and click **Run**. It
-   creates:
+   (plain Postgres) → **Run**. The API also creates the schema itself on
+   start (`BIP_DB_AUTO_SCHEMA`, on by default). Running it again is safe.
 
    | Table | Holds |
    |---|---|
    | `bip.users` | accounts: username, display name, salted scrypt password hash (never the password itself) |
-   | `bip.documents` | every record as JSON, with the username that owns it |
+   | `bip.documents` | every record as JSON, with the username that owns it; also sign-in sessions |
    | `bip.counters` | running numbers for readable ids (CONN0001, FILE0001, …) |
+   | `bip.file_parts` | uploaded Excel/CSV files, in 4 MB parts |
 
-   If you skip this step, set `BIP_DB_AUTO_SCHEMA=true` and the API creates
-   the schema on its first request.
+## 2. Render: the API
 
-## 2. Cloudflare R2 (file storage)
-
-1. https://dash.cloudflare.com → **R2 Object Storage**. The first time, R2
-   asks you to add a payment method; the free tier still applies.
-2. **Create bucket** → name `bip-files`, location **Automatic** → **Create**.
-3. **Allow the website to upload to it.** Open the bucket → **Settings →
-   CORS Policy → Add CORS policy**, and paste the following, with your
-   website's address:
-
-   ```json
-   [
-     {
-       "AllowedOrigins": ["https://your-web-app.vercel.app", "http://localhost:3000"],
-       "AllowedMethods": ["PUT", "GET", "HEAD"],
-       "AllowedHeaders": ["*"],
-       "ExposeHeaders": ["ETag"],
-       "MaxAgeSeconds": 3600
-     }
-   ]
-   ```
-
-   If the API token in the next step has *Admin Read & Write* permission, the
-   API sets this policy by itself from `BIP_WEB_URL`.
-4. **R2 overview → Manage API tokens → Create API token**:
-   - Permissions: **Object Read & Write**, or **Admin Read & Write** if you
-     want the API to set CORS itself.
-   - Specify bucket: `bip-files`.
-   - **Create.** Copy the **Access Key ID** and the **Secret Access Key**.
-     The secret is shown only once.
-5. Your **Account ID** is shown on the R2 overview page (right-hand side).
-
-## 3. Vercel project 1: the API
-
-1. https://vercel.com → **Add New → Project** → import
-   `KeerthanMuniRaja/bi-investigation-platform`.
-2. Click **Import single project** on the **app (FastAPI)** row. Keep
-   **Root Directory** `./` and **Application Preset** *FastAPI*. Vercel runs
-   `app/main.py` as one function, installs `requirements.txt`, and reads
-   `vercel.json` (a 300 s time limit) and `.python-version` (Python 3.12).
-3. **Environment Variables:**
+1. https://render.com → sign in with GitHub → **New → Blueprint** → pick
+   `KeerthanMuniRaja/bi-investigation-platform`. Render reads
+   [`render.yaml`](../render.yaml).
+2. It asks for **`DATABASE_URL`**: paste the Neon pooled connection string.
+   Everything else is preset:
 
    | Name | Value |
    |---|---|
-   | `DATABASE_URL` | Neon pooled connection string (step 1.2) |
-   | `R2_ACCOUNT_ID` | Cloudflare account ID (step 2.5) |
-   | `R2_ACCESS_KEY_ID` | from step 2.4 |
-   | `R2_SECRET_ACCESS_KEY` | from step 2.4 |
-   | `R2_BUCKET` | `bip-files` |
-   | `BIP_AUTH` | `password` |
-   | `BIP_SECRET_KEY` | a long random string: `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+   | `BIP_AUTH` | `password` (sign-in on) |
+   | `BIP_SECRET_KEY` | generated by Render: a long random value that signs sign-in tokens |
    | `BIP_ALLOW_SIGNUP` | `true` (anyone can create an account) |
-   | `BIP_DB_AUTO_SCHEMA` | `false` (you created the schema in step 1.3) |
-   | `BIP_DB_POOL_SIZE` | `3` |
-   | `BIP_WEB_URL` | the website's URL from section 4, e.g. `https://your-web-app.vercel.app` |
+   | `BIP_MEMORY_LIMIT_MB` | `512` (match your plan: `2048` on Standard) |
+   | `BIP_SESSION_IDLE_MINUTES` | `30` |
+   | `BIP_WEB_URL` | `https://bi-web-drab.vercel.app` (the website; change it if yours differs) |
 
-   No `SUPABASE_*` variables: if they are set, remove them. With the `R2_*`
-   variables present, R2 is used anyway.
-4. **Deploy.** Then open `https://<api-project>.vercel.app/health/database`.
-   It should show:
-   - `"status":"ok"` for the database;
-   - `"storage":"r2"` and `"storage_status":"ok"` for the bucket.
-5. **Settings → Security (Firewall):** keep **Bot Protection / Attack
-   Challenge Mode** *off* for the API project. The web app calls the API from
-   the browser, and a challenge page breaks those calls.
+3. **Apply**. The first build takes a few minutes. Your API address is shown
+   at the top of the service page, for example `https://bi-api.onrender.com`.
+4. Check `https://<your-api>.onrender.com/health/database`. It should show:
+   - `"status":"ok"`
+   - `"storage":"database"`
+   - `"storage_status":"ok"`
 
-## 4. Vercel project 2: the website
+Without the blueprint: **New → Web Service** → this repo, runtime
+**Python 3**, build command `pip install -r requirements.txt`, and start
+command
+`uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'`.
+Then add the variables above, with `BIP_SECRET_KEY` from
+`python -c "import secrets; print(secrets.token_urlsafe(48))"` and
+`PYTHON_VERSION=3.12.8`.
 
-1. **Add New → Project** → import the same repo again, then click **Import
-   single project** on the **web (Next.js)** row.
-2. **Root Directory**: `web`. Framework: Next.js (detected).
-3. **Environment Variables:** set `NEXT_PUBLIC_API_URL` to the API project's
-   URL, e.g. `https://<api-project>.vercel.app`.
-4. **Deploy.** Then put this site's URL in the API project's `BIP_WEB_URL`
-   and in the R2 CORS policy (step 2.3), and redeploy the API
-   (**Deployments → … → Redeploy**).
+### Choosing a plan
 
-Open the site: you'll see the sign-in page. Choose **Create account**.
+| Plan | Memory | Notes |
+|---|---|---|
+| Free | 512 MB | Sleeps after 15 idle minutes; the next visit waits ~1 minute while it wakes. |
+| Starter | 512 MB | Always on. |
+| Standard | 2 GB | For Power BI files over ~40 MB. |
 
-## 5. What Vercel limits
+Measured peaks when reading a .pbix: 18 MB file → 170 MB, 26 MB → 410 MB,
+40 MB → 460 MB. On 512 MB, the app reads the model in full but skips table
+previews that would take it near the limit. If a file is still too big,
+the dashboard says so after two attempts instead of retrying forever.
 
-The API runs as a serverless function, so a few Vercel limits apply:
+### Cleaning up while the site is unused (free plan)
 
-| Limit | Effect |
-|---|---|
-| ~4.5 MB per request/response | Uploads are not affected: they go straight to R2. Very large Excel exports (over 4.5 MB) won't download. |
-| 300 s per request (Hobby), 800 s (Pro) | A Power BI file that takes longer than that to read won't open. Files of tens of MB open in seconds. |
-| 2 GB memory (Hobby), 4 GB (Pro) | Very large models may run out of memory. After two failed reads, the dashboard says so instead of retrying. |
-| ~500 MB scratch disk | The working copy of a file must fit; the copy of record stays in R2. |
+A sleeping server can't delete anything, so ended sessions are cleaned up
+the moment it wakes, before anyone sees data. To have them removed on time
+even when nobody visits, turn on the included scheduled ping
+([`.github/workflows/session-cleanup.yml`](../.github/workflows/session-cleanup.yml)):
+- go to the GitHub repo → **Settings → Secrets and variables → Actions →
+  Variables → New repository variable**;
+- add `API_URL` = your Render address.
 
-**What needs the original .pbix:** only reconciling against the numbers a
-Power BI *visual* would compute from every row of a table. Lineage, measures,
-relationships, the health check, report map, table previews and all Excel/CSV
-reconciliations work from the snapshot. To keep the originals, set
-`BIP_KEEP_MODEL_FILES=true` on the API (they then use R2 space).
+It wakes the API every 30 minutes.
 
-For .pbix files in the hundreds of MB, run the API on a normal server
-instead. The repo's `Dockerfile` works on Render, Railway, Fly.io or Azure
-with the same environment variables; only `NEXT_PUBLIC_API_URL` on the website
-changes.
+## 3. Vercel: the website
 
-## 6. Accounts
+1. In the existing **web** project (Root Directory `web`): **Settings →
+   Environment Variables** → set `NEXT_PUBLIC_API_URL` = your Render
+   address, e.g. `https://bi-api.onrender.com` (no trailing `/`).
+2. **Deployments → … → Redeploy.** `NEXT_PUBLIC_*` values are built into the
+   site, so a redeploy is needed after changing it.
+3. If you no longer use the old Vercel API project, delete it (**Settings →
+   Advanced → Delete Project**).
+
+Open the site, then choose **Create account**.
+
+## 4. Accounts
 
 - With `BIP_ALLOW_SIGNUP=true` anyone can create an account from the sign-in
-  page. To close sign-ups, set it to `false` and redeploy the API; the first
-  account can still be created.
+  page. To close sign-ups, set it to `false`; the first account can still be
+  created.
 - From your computer, with `DATABASE_URL` in a local `.env`:
 
 ```bash
@@ -164,41 +153,33 @@ python scripts/create_user.py disable someone                  # / enable
 
 People change their own password from the account menu (top right).
 
-## 7. Bring over your existing local work (optional)
-
-Create your account on the live site first. Then, on your computer, put
-`DATABASE_URL` and the `R2_*` variables in `.env` and run:
-
-```bash
-python scripts/migrate_to_cloud.py --owner <your-username>           # shows what would move
-python scripts/migrate_to_cloud.py --owner <your-username> --apply   # copies records and uploads the files
-```
-
-## 8. Local development
+## 5. Local development
 
 Nothing changes: with no `.env`, `cd web && npm run dev` runs everything
-locally with no sign-in (SQLite and the local `data/` folder). To try sign-in
-locally, put `BIP_AUTH=password` in a `.env` file in the project folder and
-restart.
+locally with no sign-in (SQLite and the local `data/` folder), and
+dashboards are kept. To try sign-in locally, put `BIP_AUTH=password` in a
+`.env` file in the project folder and restart.
 
-## Other storage
+## Other options
 
-Any S3-compatible store works through the same variables: set `R2_ENDPOINT`
-to its endpoint (for example AWS S3, Backblaze B2 or MinIO) instead of
-`R2_ACCOUNT_ID`. Supabase Storage (`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`)
-is still supported, but its free plan caps files at 50 MB.
+- **A storage bucket instead of the database for files.** Set `R2_*`
+  (Cloudflare R2 or any S3-compatible store) or `SUPABASE_*`; see
+  [`app/store/blobs.py`](../app/store/blobs.py). Worth it once Excel files
+  outgrow the database plan (Neon free: 0.5 GB in total).
+- **A persistent disk on Render** (paid plans). Mount it, set `BIP_DATA_DIR`
+  to the mount path and `BIP_FILE_STORAGE=local` to keep files there.
+- **Docker.** The repo's `Dockerfile` runs the same API on any container
+  host.
 
 ## How privacy works
 
 - Every API call carries the sign-in token (HS256, signed with
-  `BIP_SECRET_KEY`). The API checks it, and also checks that the account
-  still exists, isn't disabled and hasn't changed its password since.
+  `BIP_SECRET_KEY`). The API checks it, and checks that the account still
+  exists, isn't disabled, hasn't changed its password since, and that this
+  sign-in's session hasn't ended. A signed-out token stops working at once.
 - Every record is stored with its owner's username, and every read and write
   is limited to the signed-in person. Another person's record ids return
   "not found".
-- Uploads go to a one-time, one-hour upload link inside the person's own
-  folder, and the API only imports files from that person's folder. The
-  bucket is private: nothing in it is publicly readable.
 - After 8 wrong passwords for a username, or from one address, the next
   attempt waits 15 minutes. Unknown usernames and wrong passwords get the
   same answer, so nobody can probe which accounts exist.

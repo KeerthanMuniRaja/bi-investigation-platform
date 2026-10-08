@@ -334,6 +334,14 @@ def _report_from_zip(z: zipfile.ZipFile, warnings: list[str]) -> tuple[list[Load
 
 
 # ---------------------------------------------------------------- loaders
+def _open_pbix(path: Path):
+    from pbixray import PBIXRay
+
+    # on_disk: the decompressed model goes to a temp file, not memory — a 40 MB
+    # .pbix peaks at ~125 MB instead of ~400 MB (matters on 512 MB servers)
+    return PBIXRay(str(path), on_disk=True)
+
+
 def _load_pbix(path: Path) -> tuple[LoadedModel, Any]:
     try:
         from pbixray import PBIXRay
@@ -341,7 +349,7 @@ def _load_pbix(path: Path) -> tuple[LoadedModel, Any]:
         raise CapabilityError("Reading .pbix files needs the 'pbixray' package: pip install pbixray") from e
     warnings: list[str] = []
     try:
-        px = PBIXRay(str(path))
+        px = _open_pbix(path)
     except Exception as e:  # noqa: BLE001
         raise ValueError(f"Could not read the semantic model inside this .pbix ({e}). If the report uses a live "
                          "connection to a published dataset, the model isn't inside the file — upload that dataset's "
@@ -657,6 +665,49 @@ FILE_NOT_KEPT = ("This needs every row of the data, which only the original .pbi
 PREVIEW_ROWS = 50
 PREVIEW_MAX_DICTIONARY_BYTES = 150 * 1024 * 1024  # a table's decoded dictionaries above this: no preview (memory)
 PREVIEW_TIME_BUDGET = 45.0          # seconds for all previews together (serverless time limits)
+PREVIEW_MEMORY_SHARE = 0.75         # previews stop before the process passes this share of its memory limit
+
+
+def _preview_cost(data_size: int, dictionary: int) -> int:
+    """Memory a table's preview briefly needs: pbixray decodes a whole
+    segment and every dictionary string (measured: ~6x the stored data plus
+    ~10x the dictionaries)."""
+    return 6 * data_size + 10 * dictionary
+
+
+def memory_limit() -> Optional[int]:
+    """The server's memory limit in bytes: BIP_MEMORY_LIMIT_MB, else the
+    container's (cgroup) limit, else None (no limit known: a laptop)."""
+    import os
+
+    mb = os.environ.get("BIP_MEMORY_LIMIT_MB", "").strip()
+    if mb:
+        return int(float(mb) * 1024 * 1024)
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            raw = Path(path).read_text().strip()
+        except OSError:
+            continue
+        if raw.isdigit() and int(raw) < 1 << 50:  # "max" / a huge number mean no limit
+            return int(raw)
+    return None
+
+
+def memory_used() -> Optional[int]:
+    """This process's resident memory in bytes (None if it can't be read)."""
+    import os
+
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        import psutil
+
+        return psutil.Process().memory_info().rss
+    except Exception:  # noqa: BLE001
+        return None
 PREVIEW_KINDS = ("import", "entered_data", "calculated")
 
 
@@ -760,13 +811,20 @@ class ModelFileConnector(BIConnector):
             return {}
         # decoded dictionaries are what costs memory: skip tables whose dictionaries are huge
         dict_bytes: dict[str, int] = {}
+        cost: dict[str, int] = {}
         try:
             for r in px.statistics.itertuples():
                 dict_bytes[r.TableName] = dict_bytes.get(r.TableName, 0) + int(r.Dictionary or 0)
+                cost[r.TableName] = cost.get(r.TableName, 0) + _preview_cost(int(getattr(r, "DataSize", 0) or 0), int(r.Dictionary or 0))
         except Exception:  # noqa: BLE001
             pass
+        limit = memory_limit()
         for t in self.model.tables:
             if t.kind not in PREVIEW_KINDS or dict_bytes.get(t.name, 0) > PREVIEW_MAX_DICTIONARY_BYTES:
+                continue
+            # small servers (Render's 512 MB plans): a preview decodes the table's dictionaries,
+            # so skip it when that would take the process near its memory limit
+            if limit and (used := memory_used()) is not None and used + cost.get(t.name, 0) > PREVIEW_MEMORY_SHARE * limit:
                 continue
             if time.monotonic() - started > PREVIEW_TIME_BUDGET:
                 break
@@ -796,10 +854,19 @@ class ModelFileConnector(BIConnector):
                             raise CapabilityError(FILE_NOT_KEPT) from e
                     if path is None or not path.exists():
                         raise CapabilityError(FILE_NOT_KEPT)
-                    from pbixray import PBIXRay
-
-                    self._pbix = PBIXRay(str(path))
+                    self._pbix = _open_pbix(path)
         return self._pbix
+
+    def close(self) -> None:
+        """Release the parsed file (its temp copy and memory map); the
+        snapshot keeps working."""
+        with self._load_lock:
+            px, self._pbix = self._pbix, None
+        if px is not None and hasattr(px, "close"):
+            try:
+                px.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def capabilities(self) -> ConnectorCapabilities:
         data = CapabilityStatus.PARTIALLY_CAPABLE if self.model.file_format == "pbix" else CapabilityStatus.UNSUPPORTED

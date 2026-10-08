@@ -5,6 +5,7 @@ import { motion } from "motion/react";
 import { useRef, useState } from "react";
 import { refresh, uploadModel } from "@/lib/api";
 import { href } from "@/lib/routes";
+import { useAuth } from "./auth/AuthProvider";
 import { toast } from "./feedback";
 import { I, Icon, Spinner } from "./ui";
 
@@ -14,6 +15,10 @@ export function ModelDropzone({ compact = false }: { compact?: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const router = useRouter();
+  const { state } = useAuth();
+  const where = state.status === "disabled" ? "read locally, nothing leaves this machine"
+    : state.temporary ? "kept for this session only — deleted when you sign out"
+    : "private to your account";
 
   async function go(file: File) {
     setBusy(file.name);
@@ -39,7 +44,7 @@ export function ModelDropzone({ compact = false }: { compact?: boolean }) {
         <>
           <motion.div className="dz-icon" animate={{ y: drag ? -4 : 0 }}><Icon d={I.upload} /></motion.div>
           <strong>Drop a Power BI file here</strong> or <span className="dz-browse">browse</span>
-          <div className="small faint" style={{ marginTop: 4 }}>.pbix · .pbit · .bim · zipped PBIP — read locally, nothing leaves this machine</div>
+          <div className="small faint" style={{ marginTop: 4 }}>.pbix · .pbit · .bim · zipped PBIP — {where}</div>
         </>
       )}
       <input ref={input} type="file" hidden accept=".pbix,.pbit,.bim,.zip" onChange={(e) => e.target.files?.[0] && go(e.target.files[0])} />

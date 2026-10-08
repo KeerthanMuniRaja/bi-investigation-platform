@@ -73,6 +73,9 @@ export function UserMenu() {
             </div>
             <div className="user-note"><Icon d={I.check} size={14} />Your dashboards and results are visible only to you.</div>
             <button className="user-item" role="menuitem" onClick={() => { setOpen(false); setPw(true); }}><Icon d={I.key} />Change password</button>
+            {state.temporary ? (
+              <div className="user-note"><Icon d={I.clock} size={14} />Power BI dashboards are removed when you sign out, or after {state.idleMinutes} minutes with the site closed.</div>
+            ) : null}
             <button className="user-item" role="menuitem" onClick={() => { setOpen(false); signOut(); }}><Icon d={I.logout} />Sign out</button>
           </motion.div>
         ) : null}

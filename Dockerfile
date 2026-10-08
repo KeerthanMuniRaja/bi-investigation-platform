@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 
 COPY app ./app
 
-# local cache of uploaded files (the copies of record are in Supabase Storage)
+# local working copies of uploaded files (copies of record: database or storage bucket)
 ENV BIP_DATA_DIR=/data
 RUN mkdir -p /data && useradd --system --home /srv bip && chown bip /data
 USER bip

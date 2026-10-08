@@ -61,6 +61,7 @@ class ConnectionRecord(BaseModel):
     source_platform: str = "generic"
     synced_workspaces: list[str] = Field(default_factory=list)
     last_synced_at: Optional[str] = None
+    session_id: Optional[str] = None  # uploaded during this sign-in session: removed when it ends (temporary dashboards)
     read_attempts: int = 0          # Power BI files: reads started without a snapshot saved (crash guard)
     created_at: str = Field(default_factory=lambda: utcnow().isoformat())
 

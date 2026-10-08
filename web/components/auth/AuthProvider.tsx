@@ -15,8 +15,12 @@ import { AUTH_EVENT, clearSession, loadSession, saveSession, setOpen, type Sessi
 import { Offline, SignIn } from "./SignIn";
 
 type Status = "loading" | "offline" | "disabled" | "signed-out" | "signed-in";
-type AuthState = { status: Status; account: SessionUser | null; message: string | null; signup: boolean };
-type Info = { auth: boolean; signup: boolean };
+/** temporary: Power BI dashboards are deleted when the session ends (sign-out, or idleMinutes with the site closed) */
+type AuthState = { status: Status; account: SessionUser | null; message: string | null; signup: boolean; temporary: boolean; idleMinutes: number };
+type Info = { auth: boolean; signup: boolean; temporary_dashboards?: boolean; idle_minutes?: number };
+
+/** the open site checks in this often, so the session stays alive while it's open */
+const HEARTBEAT_MS = 4 * 60 * 1000;
 
 type AuthApi = {
   state: AuthState;
@@ -26,7 +30,7 @@ type AuthApi = {
   changePassword: (current: string, next: string) => Promise<void>;
 };
 const Ctx = createContext<AuthApi>({
-  state: { status: "disabled", account: null, message: null, signup: false },
+  state: { status: "disabled", account: null, message: null, signup: false, temporary: false, idleMinutes: 30 },
   signIn: async () => {}, signUp: async () => {}, signOut: () => {}, changePassword: async () => {},
 });
 export const useAuth = () => useContext(Ctx);
@@ -41,7 +45,7 @@ function forgetWorkspace() {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
-  const [state, setState] = useState<AuthState>({ status: "loading", account: null, message: null, signup: false });
+  const [state, setState] = useState<AuthState>({ status: "loading", account: null, message: null, signup: false, temporary: false, idleMinutes: 30 });
   const lastUser = useRef<string | null>(null);
   const [attempt, setAttempt] = useState(0);
 
@@ -58,17 +62,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (live) setState((s) => ({ ...s, status: "offline", message: (e as Error).message }));
         return;
       }
-      if (!info.auth) { if (live) setState({ status: "disabled", account: null, message: null, signup: false }); return; }
+      const mode = { temporary: !!info.temporary_dashboards, idleMinutes: info.idle_minutes ?? 30 };
+      if (!info.auth) { if (live) setState({ status: "disabled", account: null, message: null, signup: false, ...mode }); return; }
       const saved = loadSession();
-      if (!saved) { if (live) setState({ status: "signed-out", account: null, message: null, signup: info.signup }); return; }
+      if (!saved) { if (live) setState({ status: "signed-out", account: null, message: null, signup: info.signup, ...mode }); return; }
       try {
         const me = await openApi<{ username: string; name: string }>("GET", "/me", undefined, saved.token);
         lastUser.current = me.username;
-        if (live) setState({ status: "signed-in", account: { username: me.username, name: me.name }, message: null, signup: info.signup });
+        if (live) setState({ status: "signed-in", account: { username: me.username, name: me.name }, message: null, signup: info.signup, ...mode });
       } catch (e) {
         if (e instanceof ApiError && e.status === 401) clearSession();
-        if (live) setState({ status: "signed-out", account: null, signup: info.signup,
-          message: e instanceof ApiError && e.status === 401 ? "Your session ended — sign in again." : (e as Error).message });
+        const ended = mode.temporary ? "Your session ended and its Power BI dashboards were removed — sign in again." : "Your session ended — sign in again.";
+        if (live) setState({ status: "signed-out", account: null, signup: info.signup, ...mode,
+          message: e instanceof ApiError && e.status === 401 ? ended : (e as Error).message });
       }
     })();
     return () => { live = false; };
@@ -83,6 +89,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.addEventListener(AUTH_EVENT, ended);
     return () => window.removeEventListener(AUTH_EVENT, ended);
   }, []);
+
+  // keep the session alive while the site is open; closing it starts the idle clock on the server
+  useEffect(() => {
+    if (state.status !== "signed-in") return;
+    const beat = setInterval(() => { api("GET", "/me").catch(() => { /* a 401 signs out through AUTH_EVENT */ }); }, HEARTBEAT_MS);
+    return () => clearInterval(beat);
+  }, [state.status]);
 
   const begin = useCallback((session: Session) => {
     if (lastUser.current && lastUser.current !== session.user.username) forgetWorkspace();  // someone else on this browser
@@ -100,6 +113,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [begin]);
 
   const signOut = useCallback(() => {
+    // end the session on the server too: that's what removes its Power BI dashboards
+    const token = loadSession()?.token;
+    if (token) openApi("POST", "/auth/logout", undefined, token).catch(() => { /* already ended */ });
     setOpen(false);
     clearSession();
     forgetWorkspace();
