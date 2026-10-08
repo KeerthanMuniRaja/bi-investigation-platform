@@ -32,7 +32,7 @@ from typing import Callable, Generic, Iterator, Optional, Protocol, Type, TypeVa
 from pydantic import BaseModel, Field
 
 from app.auth import current_owner
-from app.connectors.base import BIConnector
+from app.connectors.base import BIConnector, CapabilityError
 from app.connectors.registry import SECRET_FIELDS, ConnectionRecord, build_connector
 from app.engine.extraction import build_full_graph
 from app.engine.graph_store import GraphStore
@@ -46,6 +46,10 @@ from app.models.snapshot import VisualSnapshot
 from app.store.blobs import Blobs, blobs_from_env
 
 M = TypeVar("M", bound=BaseModel)
+
+READ_FAILED = ("Reading this Power BI file failed twice — most likely the server ran out of memory or time "
+               "(Vercel gives the API 2 GB on the Hobby plan, 4 GB on Pro). Delete this dashboard and upload a smaller "
+               "file, or run the API on a server with more memory.")
 
 
 class FileRecord(BaseModel):
@@ -501,8 +505,18 @@ class Store:
     def has_secrets(self, connection_id: str) -> bool:
         return bool(self._secrets.get(connection_id))
 
+    MAX_READ_ATTEMPTS = 2
+
     def sync(self, connection_id: str, workspace_id: str) -> tuple[GraphStore, list[str]]:
         with self._conn_lock(connection_id):
+            record = self.connection_records[connection_id]
+            first_read = record.platform == "pbix" and connection_id not in self.model_snapshots
+            if first_read:
+                # a read that was killed (out of memory / time) never gets to save its snapshot:
+                # after two of those, stop instead of crashing on every page that asks
+                if record.read_attempts >= self.MAX_READ_ATTEMPTS:
+                    raise CapabilityError(READ_FAILED)
+                self.connection_records.update(connection_id, lambda r: setattr(r, "read_attempts", r.read_attempts + 1))
             connector = self.connector(connection_id)
             graph = GraphStore()
             warnings = build_full_graph(graph, connector, workspace_id)
@@ -513,6 +527,7 @@ class Store:
             def mark(record: ConnectionRecord) -> None:
                 record.synced_workspaces = [workspace_id]
                 record.last_synced_at = utcnow().isoformat()
+                record.read_attempts = 0
 
             record = self.connection_records.update(connection_id, mark)
             # a Power BI file read for the first time: save what was read (older dashboards too)
@@ -527,6 +542,12 @@ class Store:
         record = self.connection_records[connection_id]
         if record.platform != "pbix" or connection_id not in self.model_snapshots:
             return False
+        # the parsed file can hold hundreds of MB: from now on work from the snapshot
+        with self._lock:
+            self._connectors.pop(connection_id, None)
+        import gc
+
+        gc.collect()
         for file_id in record.file_ids:
             f = self.files.get(file_id)
             if f is None or not f.kept:

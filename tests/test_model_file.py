@@ -260,3 +260,17 @@ def test_model_files_are_kept_only_when_storage_is_free(isolated_store, monkeypa
     assert keep_model_files(isolated_store) is False         # cloud storage: release after reading
     monkeypatch.setenv("BIP_KEEP_MODEL_FILES", "true")
     assert keep_model_files(isolated_store) is True
+
+
+def test_a_file_that_keeps_crashing_the_reader_gets_a_clear_message(isolated_store):
+    """A read killed by the host (out of memory/time) never saves a snapshot;
+    after two such attempts the app explains instead of crashing every page."""
+    from app.connectors.registry import ConnectionRecord
+    from app.store.database import READ_FAILED
+
+    store = isolated_store
+    store.connection_records["CONN0001"] = ConnectionRecord(id="CONN0001", name="Big", platform="pbix", file_ids=["FILE0001"],
+                                                            workspace_id="file", read_attempts=2)
+    with pytest.raises(CapabilityError) as e:
+        store.sync("CONN0001", "file")
+    assert str(e.value) == READ_FAILED

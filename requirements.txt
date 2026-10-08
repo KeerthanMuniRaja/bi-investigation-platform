@@ -5,7 +5,7 @@ python-multipart>=0.0.9
 openpyxl>=3.1
 requests>=2.31
 msal>=1.28
-pbixray>=0.15
+pbixray>=0.15.5
 # cloud: Postgres (e.g. Supabase), sign-in tokens, Supabase Storage, .env files
 psycopg[binary]>=3.2
 psycopg-pool>=3.2

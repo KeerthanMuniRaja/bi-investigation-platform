@@ -655,7 +655,7 @@ SNAPSHOT_VERSION = 1
 FILE_NOT_KEPT = ("This needs every row of the data, which only the original .pbix has — and it isn't kept (to save storage). "
                  "Upload the file again to use this.")
 PREVIEW_ROWS = 50
-PREVIEW_MAX_TABLE_ROWS = 500_000   # bigger tables are skipped: reading them takes too long
+PREVIEW_MAX_DICTIONARY_BYTES = 150 * 1024 * 1024  # a table's decoded dictionaries above this: no preview (memory)
 PREVIEW_TIME_BUDGET = 45.0          # seconds for all previews together (serverless time limits)
 PREVIEW_KINDS = ("import", "entered_data", "calculated")
 
@@ -750,21 +750,37 @@ class ModelFileConnector(BIConnector):
             return {}
         import time
 
+        import gc
+
         out: dict = {}
         started = time.monotonic()
         try:
             px = self._file()
         except CapabilityError:
             return {}
+        # decoded dictionaries are what costs memory: skip tables whose dictionaries are huge
+        dict_bytes: dict[str, int] = {}
+        try:
+            for r in px.statistics.itertuples():
+                dict_bytes[r.TableName] = dict_bytes.get(r.TableName, 0) + int(r.Dictionary or 0)
+        except Exception:  # noqa: BLE001
+            pass
         for t in self.model.tables:
-            if t.kind not in PREVIEW_KINDS or (self.model.row_counts.get(t.name) or 0) > PREVIEW_MAX_TABLE_ROWS:
+            if t.kind not in PREVIEW_KINDS or dict_bytes.get(t.name, 0) > PREVIEW_MAX_DICTIONARY_BYTES:
                 continue
             if time.monotonic() - started > PREVIEW_TIME_BUDGET:
                 break
             try:
-                out[t.name] = _frame_rows(px.get_table(t.name).head(PREVIEW_ROWS)).model_dump()
+                # only the first rows: reading whole tables can take GBs (serverless memory limits)
+                chunks = px.iter_table(t.name, chunk_size=PREVIEW_ROWS, strings_as_categorical=False)
+                first = next(iter(chunks), None)
+                if first is not None:
+                    out[t.name] = _frame_rows(first.head(PREVIEW_ROWS)).model_dump()
+                del chunks, first
             except Exception:  # noqa: BLE001 - DirectQuery / not refreshed: no stored rows
                 continue
+            finally:
+                gc.collect()
         return out
 
     def _file(self):
