@@ -7,7 +7,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode 
 import { overviewKey, useApi } from "@/lib/api";
 import { collapse, spring } from "@/lib/motion";
 import { store } from "@/lib/nav";
-import { resolveWs, useWsRoute, wsPath } from "@/lib/routes";
+import { resolveWs, wsPath, type WsRoute } from "@/lib/routes";
 import { pageMeasures } from "@/lib/overview";
 import type { MeasureRow, Overview } from "@/lib/types";
 import { I, Icon, Loading } from "@/components/ui";
@@ -21,8 +21,7 @@ function Mark({ text, needle }: { text: string; needle: string }) {
   return <>{text.slice(0, i)}<mark>{text.slice(i, i + needle.length)}</mark>{text.slice(i + needle.length)}</>;
 }
 
-export function MeasuresPanel() {
-  const route = useWsRoute()!;
+export function MeasuresPanel({ route }: { route: WsRoute }) {
   const router = useRouter();
   const cid = route.cid;
   const { data: ov, error } = useApi<Overview>(overviewKey(cid), { dedupingInterval: 600000 });

@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { overviewKey, syncConnection, useApi } from "@/lib/api";
 import { fmt } from "@/lib/format";
 import { fadeUp, spring } from "@/lib/motion";
-import { MODEL_TABS, href, modelPath, safeDecode, slugsOf, useWsRoute, type ModelTab } from "@/lib/routes";
+import { MODEL_TABS, href, modelPath, safeDecode, slugsOf, useWsRoute, type ModelTab, type WsRoute } from "@/lib/routes";
 import type { Overview } from "@/lib/types";
 import { useCrumbs } from "@/components/shell/Crumbs";
 import { toast } from "@/components/feedback";
@@ -19,7 +19,14 @@ const TAB_LABEL: Record<Tab, string> = { overview: "Overview", "report-map": "Re
 
 /** /dashboards/<dashboard>/model/<tab>[/<measure>] */
 export function ModelView() {
-  const route = useWsRoute()!;
+  const route = useWsRoute();
+  // Next keeps recently visited pages mounted (hidden): after you leave the
+  // model view the address is another page's, so there's nothing to show
+  if (!route?.model) return null;
+  return <ModelPage route={route} />;
+}
+
+function ModelPage({ route }: { route: WsRoute }) {
   const router = useRouter();
   const pathname = usePathname();
   const cid = route.cid;

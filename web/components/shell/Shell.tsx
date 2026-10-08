@@ -58,7 +58,9 @@ export function Shell({ children }: { children: ReactNode }) {
             </header>
             <div className="content">{children}</div>
           </main>
-          <AnimatePresence>{showMeasures ? <MeasuresPanel key="measures" /> : null}</AnimatePresence>
+          {/* the route is passed in: while the panel animates out after leaving a
+              dashboard, it keeps the one it was showing instead of reading the new page's */}
+          <AnimatePresence>{showMeasures && route ? <MeasuresPanel key="measures" route={route} /> : null}</AnimatePresence>
         </div>
         <Toaster />
       </CrumbsProvider>
