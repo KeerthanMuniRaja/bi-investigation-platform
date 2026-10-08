@@ -877,11 +877,21 @@ class ModelFileConnector(BIConnector):
             return QueryResult(columns=saved["columns"], rows=saved["rows"][:max(limit, 0)])
         px = self._file()
         try:
-            frame = px.get_table(table)
+            if limit is None:
+                frame = px.get_table(table)
+            else:
+                # read in chunks and stop at `limit` rows: never materialise a huge table for a preview
+                import pandas as pd
+
+                parts, have = [], 0
+                for chunk in px.iter_table(table, chunk_size=min(max(limit, 1), 10_000), strings_as_categorical=False):
+                    parts.append(chunk)
+                    have += len(chunk)
+                    if have >= limit:
+                        break
+                frame = (pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()).head(max(limit, 0))
         except Exception as e:  # noqa: BLE001
             raise CapabilityError(f"Table '{table}' has no data stored in the file (DirectQuery or not yet refreshed?): {e}") from e
-        if limit is not None:
-            frame = frame.head(max(limit, 0))
         return _frame_rows(frame)
 
     def get_visual_data(self, report_id: str, page_id: str, visual_id: str, filters: list[FilterContext]) -> QueryResult:
