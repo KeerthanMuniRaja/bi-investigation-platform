@@ -63,7 +63,7 @@ async function request<T>(method: string, path: string, body: unknown, signal: A
     res = await fetch(`${API_URL}${path}`, init);
   } catch (e) {
     if ((e as Error).name === "AbortError") throw e;
-    throw new ApiError(`Can't reach the Python API at ${API_URL} — is it running? (uvicorn app.main:app)`, 0);
+    throw new ApiError(`The API at ${API_URL} didn't answer. It may have timed out on a large file, be restarting, or not allow this site (BIP_WEB_URL). Locally: is it running?`, 0);
   }
   const text = await res.text();
   let data: unknown = null;
@@ -82,7 +82,7 @@ export async function download(path: string, fallbackName: string) {
   try {
     res = await fetch(`${API_URL}${path}`, { headers: await authHeaders() });
   } catch {
-    throw new ApiError(`Can't reach the Python API at ${API_URL} — is it running? (uvicorn app.main:app)`, 0);
+    throw new ApiError(`The API at ${API_URL} didn't answer. It may have timed out on a large file, be restarting, or not allow this site (BIP_WEB_URL). Locally: is it running?`, 0);
   }
   if (!res.ok) {
     const text = await res.text();

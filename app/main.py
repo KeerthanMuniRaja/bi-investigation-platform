@@ -63,6 +63,37 @@ def _allowed_origins() -> list[str]:
                                *[o.strip().rstrip("/") for o in extra if o.strip()]]))
 
 
+class _ErrorsAsJson:
+    """Unexpected errors become a JSON 500 *inside* the CORS layer, so the
+    browser can read them. (Starlette's own last-resort handler sits outside
+    CORS: its bare 500 has no CORS headers and the web app could only say
+    "can't reach the API", hiding the real reason.)"""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        started = False
+
+        async def send_wrapper(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Unhandled error on %s %s", scope.get("method"), scope.get("path"))
+            if started:
+                raise
+            await JSONResponse(status_code=500, content={"detail": f"Server error: {type(exc).__name__}: {exc}"})(scope, receive, send)
+
+
+# order matters: added first = inner, so errors are caught before CORS adds its headers
+app.add_middleware(_ErrorsAsJson)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins(),
