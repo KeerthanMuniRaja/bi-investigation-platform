@@ -154,6 +154,12 @@ def health() -> dict:
 
 def _db_hint(message: str, parts) -> str:
     m = message.lower()
+    host = (parts.hostname or "").lower()
+    if host.startswith("db.") and host.endswith(".supabase.co"):
+        ref = host[3:-len(".supabase.co")]
+        return (f"This is Supabase's Direct connection (IPv6 only), which Vercel can't reach. Use the Transaction pooler: "
+                f"postgresql://postgres.{ref}:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres "
+                "(Supabase > Connect > Transaction pooler shows the exact address).")
     if "password authentication failed" in m:
         return "Wrong database password in DATABASE_URL (or special characters in it need %-encoding, e.g. @ -> %40)."
     if "tenant or user not found" in m:
