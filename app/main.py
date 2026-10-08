@@ -152,13 +152,47 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+def _db_hint(message: str, parts) -> str:
+    m = message.lower()
+    if "password authentication failed" in m:
+        return "Wrong database password in DATABASE_URL (or special characters in it need %-encoding, e.g. @ -> %40)."
+    if "tenant or user not found" in m:
+        return "The user in DATABASE_URL must be postgres.<project-ref> when using the Supabase pooler."
+    if any(x in m for x in ("could not translate host name", "name or service not known", "nodename nor servname",
+                            "failed to resolve host", "getaddrinfo")):
+        return "The host in DATABASE_URL doesn't exist: copy the Transaction pooler string from Supabase > Connect."
+    if "timeout" in m or "timed out" in m or "network is unreachable" in m:
+        return ("Can't reach the database host. On Vercel use the Transaction pooler (…pooler.supabase.com:6543), "
+                "not the Direct connection (db.<ref>.supabase.co, IPv6 only).")
+    return "Check DATABASE_URL against Supabase > Connect > Transaction pooler."
+
+
 @app.get("/health/database", tags=["meta"])
 def health_database() -> JSONResponse:
     """Setup check: can the API reach its database and storage? (No data is read.)"""
     from app.store.blobs import blobs_from_env
 
-    out: dict = {"database": "postgres" if os.environ.get("DATABASE_URL") else "sqlite (local file)",
+    url = os.environ.get("DATABASE_URL", "").strip()
+    out: dict = {"database": "postgres" if url else "sqlite (local file)",
                  "storage": "supabase" if blobs_from_env().enabled else "local disk", "sign_in": auth_enabled()}
+    if url:
+        # one direct attempt first: the connection pool only says "timed out",
+        # Postgres itself says why (wrong password, unknown host, wrong port...)
+        import re
+        from urllib.parse import urlsplit
+
+        import psycopg
+
+        parts = urlsplit(url)
+        out["database_host"] = f"{parts.hostname}:{parts.port or 5432}"
+        out["database_user"] = parts.username
+        try:
+            with psycopg.connect(url, connect_timeout=10, prepare_threshold=None) as conn:
+                conn.execute("select 1")
+        except Exception as e:  # noqa: BLE001
+            message = re.sub(r"(://[^:/@]+:)[^@]*@", r"****@", str(e)).strip()  # never echo the password
+            out.update(status="error", error=f"{type(e).__name__}: {message}", hint=_db_hint(message, parts))
+            return JSONResponse(out, status_code=500)
     try:
         db = get_store().db
         out["accounts"] = db.count_users()
