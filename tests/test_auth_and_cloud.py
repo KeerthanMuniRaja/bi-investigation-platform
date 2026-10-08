@@ -294,3 +294,13 @@ def test_setup_checks_report_what_is_wrong(monkeypatch):
     monkeypatch.setenv("BIP_WEB_URL", "https://bi-web.vercel.app/")       # trailing "/" pasted by mistake
     monkeypatch.setenv("BIP_CORS_ORIGINS", "https://other.example.com/ , https://bi-web.vercel.app")
     assert _allowed_origins() == ["http://localhost:3000", "http://127.0.0.1:3000", "https://other.example.com", "https://bi-web.vercel.app"]
+
+
+def test_database_passwords_with_special_characters_just_work():
+    from app.store.database import normalize_db_url
+
+    host = "aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
+    assert normalize_db_url(f"postgresql://postgres.ref:My@Pass#1/x?@{host}") == f"postgresql://postgres.ref:My%40Pass%231%2Fx%3F@{host}"
+    assert normalize_db_url(f"postgresql://postgres.ref:My%40Pass@{host}") == f"postgresql://postgres.ref:My%40Pass@{host}"   # already encoded: unchanged
+    assert normalize_db_url(f"postgresql://postgres.ref:plain123@{host}") == f"postgresql://postgres.ref:plain123@{host}"
+    assert normalize_db_url("") == ""

@@ -340,8 +340,25 @@ def default_data_dir() -> str:
     return os.environ.get("BIP_DATA_DIR") or ("/tmp/bip" if on_vercel() else "./data")
 
 
+def normalize_db_url(url: str) -> str:
+    """Accept a database address whose password has special characters
+    (@ # / ? : %) typed as-is: the last "@" separates the password from the
+    host, and the password is %-encoded so the driver reads it correctly."""
+    from urllib.parse import quote, unquote
+
+    url = url.strip()
+    scheme, sep, rest = url.partition("://")
+    if not sep or "@" not in rest:
+        return url
+    userinfo, _, hostpart = rest.rpartition("@")
+    user, colon, password = userinfo.partition(":")
+    if not colon:
+        return url
+    return f"{scheme}://{user}:{quote(unquote(password), safe='')}@{hostpart}"
+
+
 def open_database(data_dir: Path, db_path: Optional[str] = None) -> DocumentDB:
-    url = os.environ.get("DATABASE_URL", "").strip()
+    url = normalize_db_url(os.environ.get("DATABASE_URL", ""))
     if url and db_path is None:
         return PostgresDocumentDB(url)
     if on_vercel() and db_path is None:

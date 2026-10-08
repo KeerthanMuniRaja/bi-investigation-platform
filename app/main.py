@@ -178,7 +178,9 @@ def health_database() -> JSONResponse:
     """Setup check: can the API reach its database and storage? (No data is read.)"""
     from app.store.blobs import blobs_from_env
 
-    url = os.environ.get("DATABASE_URL", "").strip()
+    from app.store.database import normalize_db_url
+
+    url = normalize_db_url(os.environ.get("DATABASE_URL", ""))
     out: dict = {"database": "postgres" if url else "sqlite (local file)",
                  "storage": "supabase" if blobs_from_env().enabled else "local disk", "sign_in": auth_enabled()}
     if url:
